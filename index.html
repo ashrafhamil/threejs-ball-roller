@@ -641,6 +641,56 @@ function genLevel(seed, d) {
 }
 for (let i = 0; i < 30; i++) LEVELS.push(genLevel(1234 + i * 97, i / 29));
 
+// ---------- Chill levels: flat, LONG, winding path with real left/right heading
+// turns that roam the whole plane (no movers). ----------
+function genChill(seed) {
+  const rng = mulberry32(seed);
+  const rnd = (a, b) => a + rng() * (b - a);
+  const ri = (a, b) => Math.floor(rnd(a, b + 1));
+  const W = 8, cy = 0;
+  const p = [];
+  let x = 0, z = 0, dx = 0, dz = -1;                          // heading (starts North / -z)
+  const straight = len => {
+    const w = dz !== 0 ? W : len, d = dz !== 0 ? len : W;
+    p.push({ x: x + dx * len / 2, z: z + dz * len / 2, w, d, y: cy });
+    x += dx * len; z += dz * len;
+  };
+  const hillsRun = len => {
+    const w = dz !== 0 ? W : len, d = dz !== 0 ? len : W;
+    const n = ri(2, 3), b = [];
+    for (let k = 0; k < n; k++) {
+      const t = (k + 0.7) / (n + 1);
+      b.push({ x: x + dx * len * t + (dz !== 0 ? rnd(-W / 3, W / 3) : 0),
+               z: z + dz * len * t + (dx !== 0 ? rnd(-W / 3, W / 3) : 0),
+               amp: rnd(1.4, 2.6), sig: rnd(1.9, 2.7) });
+    }
+    p.push({ x: x + dx * len / 2, z: z + dz * len / 2, w, d, y: cy, bumps: b });
+    x += dx * len; z += dz * len;
+  };
+  const turn = sign => {
+    x += dx * W / 2; z += dz * W / 2;                          // move to the junction center
+    p.push({ x, z, w: W, d: W, y: cy });                      // corner pad
+    if (sign > 0) { const a = dz, b = -dx; dx = a; dz = b; }  // left
+    else { const a = -dz, b = dx; dx = a; dz = b; }           // right
+  };
+
+  const firstLen = ri(12, 16);
+  const start = { x: 0, z: -firstLen / 2 };
+  straight(firstLen);
+  const N = ri(22, 30);                                        // long
+  let sinceTurn = 1;
+  for (let i = 0; i < N; i++) {
+    const r = rng();
+    if (r < 0.5 && sinceTurn >= 1) { turn(rng() < 0.5 ? 1 : -1); sinceTurn = 0; straight(ri(9, 16)); }
+    else if (r < 0.65) { hillsRun(ri(14, 20)); sinceTurn++; }
+    else { straight(ri(10, 18)); sinceTurn++; }
+  }
+  x += dx * W / 2; z += dz * W / 2;
+  p.push({ x, z, w: W + 1, d: W + 1, y: cy });                // goal pad
+  return { start, goalIdx: p.length - 1, platforms: p };
+}
+for (let i = 0; i < 5; i++) LEVELS.push(genChill(7000 + i * 131));
+
 const platMat  = new THREE.MeshStandardMaterial({ color: 0x36406e, roughness: 0.92 });
 const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0.9 });
 // hill material: colors by height ABOVE THE PLATFORM BASE (attribute aH) so hills
