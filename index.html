@@ -22,12 +22,32 @@
   #banner h1 { font-size: 42px; margin-bottom: 8px; letter-spacing: 1px; }
   #banner p { font-size: 15px; opacity: .85; }
   #banner .key { color: #6cf0c2; font-weight: 700; }
+  #banner .best { color: #ffd76a; font-weight: 700; }
+  #scores {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    color: #cdd6ff; font-size: 13px; user-select: none;
+    background: rgba(20,24,44,.55); border: 1px solid rgba(120,140,220,.25);
+    border-radius: 10px; padding: 10px 12px; min-width: 132px;
+    text-shadow: 0 1px 2px rgba(0,0,0,.5); backdrop-filter: blur(3px);
+  }
+  #scores h2 { font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
+    color: #8ea0d8; margin-bottom: 6px; font-weight: 700; }
+  .srow { display: flex; justify-content: space-between; gap: 14px; padding: 2px 0; }
+  .srow span:last-child { color: #6cf0c2; font-variant-numeric: tabular-nums; }
+  .srow.cur { color: #fff; }
+  .srow.cur span:last-child { color: #ffd76a; }
+  .srow.empty span:last-child { color: #556; }
+  #scores .total { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(120,140,220,.2); }
 </style>
 </head>
 <body>
 <div id="hud">
   <div>Level <b id="level">1</b> &nbsp; Time <b id="time">0.0</b>s</div>
   <div>Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b></div>
+</div>
+<div id="scores">
+  <h2>Best Times</h2>
+  <div id="scores-body"></div>
 </div>
 <div id="banner">
   <h1 id="banner-title">Ball Roller</h1>
@@ -335,6 +355,36 @@ const elTime = document.getElementById('time');
 function showBanner(t, s) { bannerTitle.textContent = t; bannerSub.innerHTML = s; banner.style.display = 'flex'; }
 function hideBanner() { banner.style.display = 'none'; }
 
+// ---------- Scoreboard (best time per level, persisted) ----------
+const BEST_KEY = 'ballRoller.best.v1';
+let best = loadBest();
+function loadBest() {
+  try { return JSON.parse(localStorage.getItem(BEST_KEY)) || {}; } catch (e) { return {}; }
+}
+function saveBest() {
+  try { localStorage.setItem(BEST_KEY, JSON.stringify(best)); } catch (e) {}
+}
+const elScores = document.getElementById('scores-body');
+function renderScores() {
+  let html = '', total = 0, complete = true;
+  for (let i = 0; i < LEVELS.length; i++) {
+    const b = best[i];
+    if (b == null) complete = false; else total += b;
+    const cls = 'srow' + (i === level ? ' cur' : '') + (b == null ? ' empty' : '');
+    html += `<div class="${cls}"><span>Lvl ${i + 1}</span><span>${b == null ? '—' : b.toFixed(1) + 's'}</span></div>`;
+  }
+  html += `<div class="srow total"><span>Total</span><span>${complete ? total.toFixed(1) + 's' : '—'}</span></div>`;
+  elScores.innerHTML = html;
+}
+// record a finished level; returns {improved, prev}
+function recordTime(idx, t) {
+  const prev = best[idx];
+  const improved = prev == null || t < prev;
+  if (improved) { best[idx] = +t.toFixed(1); saveBest(); }
+  renderScores();
+  return { improved, prev };
+}
+
 function startLevel(idx) {
   level = idx;
   buildLevel(level);
@@ -342,6 +392,7 @@ function startLevel(idx) {
   state = 'play';
   hideBanner();
   elLevel.textContent = level + 1;
+  renderScores();
 }
 
 // ---------- Camera ----------
@@ -403,8 +454,12 @@ function update(dt) {
   if (dx * dx + dz * dz < 1.8 * 1.8 && ballPos.y <= goalPos.y + BALL_R + 0.6) {
     state = 'win';
     const last = level === LEVELS.length - 1;
+    const { improved, prev } = recordTime(level, elapsed);
+    const bestLine = improved
+      ? `<span class="best">★ NEW BEST ${elapsed.toFixed(1)}s</span>`
+      : `Time ${elapsed.toFixed(1)}s &nbsp; Best <span class="best">${prev.toFixed(1)}s</span>`;
     showBanner(last ? 'All levels clear! 🏁' : 'Level clear!',
-      `Time ${elapsed.toFixed(1)}s &nbsp; <span class="key">SPACE</span> for ${last ? 'level 1' : 'next'}`);
+      `${bestLine}<br><span class="key">SPACE</span> for ${last ? 'level 1' : 'next'} &nbsp; <span class="key">R</span> to retry`);
   }
 }
 
@@ -419,6 +474,7 @@ function render() {
 // ---------- Boot ----------
 const clock = new THREE.Clock();
 buildLevel(0);
+renderScores();
 showBanner('Ball Roller', 'Roll down the ramps to the <span class="key">green pad</span>.<br><span class="key">SPACE</span> to start');
 
 function tick() {
