@@ -800,6 +800,17 @@ function support(x, z, ballY) {
   return best;
 }
 
+// highest platform surface whose footprint contains (x,z); null if over a gap/void
+function groundUnder(x, z) {
+  let by = -Infinity, found = false;
+  for (const p of platforms) {
+    if (x < p.minX || x > p.maxX || z < p.minZ || z > p.maxZ) continue;
+    const ph = surfHeight(p, x, z);
+    if (ph > by) { by = ph; found = true; }
+  }
+  return found ? by : null;
+}
+
 // ---------- Physics ----------
 const ballPos = new THREE.Vector3();
 const vel = new THREE.Vector3();
@@ -1006,10 +1017,7 @@ function update(dt) {
   }
 
   const p = support(ballPos.x, ballPos.z, ballPos.y);
-  // stick tolerance covers how far the surface can drop beneath the ball in one
-  // frame on a fast/steep descending ramp (slope * speed * dt) — else the ball
-  // reads as airborne every frame and false-triggers a fall
-  grounded = p && vel.y <= 0.01 && ballPos.y <= surfHeight(p, ballPos.x, ballPos.z) + BALL_R + 1.0;
+  grounded = p && vel.y <= 0.01 && ballPos.y <= surfHeight(p, ballPos.x, ballPos.z) + BALL_R + 0.12;
 
   if (grounded) {
     surfNormal(p, ballPos.x, ballPos.z, normal);
@@ -1098,7 +1106,6 @@ function update(dt) {
   // sound: land thud on touchdown, rolling rumble scaled by ground speed
   if (grounded && !sndGrounded) Sound.land();
   sndGrounded = grounded;
-  if (grounded) lastGroundY = ballPos.y;   // remember where we last stood
   Sound.roll(Math.hypot(vel.x, vel.z), grounded);
 
   ball.rotation.z -= vel.x * dt / BALL_R;
@@ -1107,7 +1114,12 @@ function update(dt) {
   ball.position.copy(ballPos);
 
   // begin the plunge once clearly off the course -> fall with the ball
-  if (state === 'play' && !grounded && ballPos.y < lastGroundY - 12) { state = 'falling'; Sound.fall(); }
+  // fall detection: only when actually over the void (no platform beneath) and
+  // dropping below the last ground — descending ramps always have ground below,
+  // so the ball stays free (can catch air off bumps) without a false fall
+  const gUnder = groundUnder(ballPos.x, ballPos.z);
+  if (gUnder !== null) lastGroundY = gUnder;
+  if (state === 'play' && !grounded && gUnder === null && ballPos.y < lastGroundY - 4) { state = 'falling'; Sound.fall(); }
   if (state !== 'play') return; // no goal check while falling / drifting
   const dx = ballPos.x - goalPos.x, dz = ballPos.z - goalPos.z;
   if (dx * dx + dz * dz < 1.8 * 1.8 && ballPos.y <= goalPos.y + BALL_R + 0.6) {
