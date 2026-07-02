@@ -241,6 +241,8 @@ const Sound = (() => {
   };
 })();
 
+const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
 // ---------- Global leaderboard (Supabase REST, per-level best times) ----------
 const LB_URL = 'https://qeimeyocuusfukyaqqsp.supabase.co/rest/v1/ballroller_scores';
 const LB_KEY = 'sb_publishable_Hc_WIXxTV9YqJ__CNRhBBA_2NVjIylQ';
@@ -289,8 +291,7 @@ document.getElementById('lbbtn').addEventListener('click', () => openLeaderboard
 // ---------- Touch controls (mobile): virtual joystick + jump button ----------
 const touchMove = { x: 0, z: 0, active: false };
 {
-  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-  if (isTouch) { document.getElementById('touch').classList.add('on'); document.body.classList.add('touch'); }
+  if (IS_TOUCH) { document.getElementById('touch').classList.add('on'); document.body.classList.add('touch'); }
   const joy = document.getElementById('joy'), knob = document.getElementById('knob');
   let joyId = null, cx = 0, cy = 0; const MAX = 45;
   function move(e) {
@@ -1115,8 +1116,10 @@ function update(dt) {
     const bestLine = improved
       ? `<span class="best">★ NEW BEST ${elapsed.toFixed(1)}s</span>`
       : `Time ${elapsed.toFixed(1)}s &nbsp; Best <span class="best">${prev.toFixed(1)}s</span>`;
-    showBanner(last ? 'All levels clear! 🏁' : 'Level clear!',
-      `${bestLine}<br><span class="key">SPACE</span> next &nbsp; <span class="key">R</span> retry &nbsp; <span class="key">L</span> leaderboard`);
+    const hint = IS_TOUCH
+      ? 'Tap to continue &nbsp; <b>↺</b> retry &nbsp; <b>🏆</b> leaderboard'
+      : '<span class="key">SPACE</span> next &nbsp; <span class="key">R</span> retry &nbsp; <span class="key">L</span> leaderboard';
+    showBanner(last ? 'All levels clear! 🏁' : 'Level clear!', `${bestLine}<br>${hint}`);
   }
 }
 
