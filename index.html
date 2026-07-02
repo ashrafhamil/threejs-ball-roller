@@ -232,15 +232,18 @@ const LB_URL = 'https://qeimeyocuusfukyaqqsp.supabase.co/rest/v1/ballroller_scor
 const LB_KEY = 'sb_publishable_Hc_WIXxTV9YqJ__CNRhBBA_2NVjIylQ';
 const LB_HDR = { apikey: LB_KEY, Authorization: 'Bearer ' + LB_KEY, 'Content-Type': 'application/json' };
 let playerName = localStorage.getItem('ballRoller.name') || '';
-function ensureName() {
+function ensureName(beatPrev) {
   if (!playerName) {
-    const n = (prompt('Enter a name for the leaderboard:', '') || '').trim().slice(0, 24);
+    const msg = beatPrev
+      ? '🏆 New record! You beat your previous best.\nDrop your name so you can show off on the leaderboard:'
+      : 'Nice time! Enter your name for the leaderboard:';
+    const n = (prompt(msg, '') || '').trim().slice(0, 24);
     if (n) { playerName = n; localStorage.setItem('ballRoller.name', n); }
   }
   return playerName;
 }
-async function submitScore(levelIdx, ms) {
-  const name = ensureName(); if (!name) return;
+async function submitScore(levelIdx, ms, beatPrev) {
+  const name = ensureName(beatPrev); if (!name) return;
   try {
     await fetch(LB_URL, { method: 'POST', headers: { ...LB_HDR, Prefer: 'return=minimal' },
       body: JSON.stringify({ name, level: levelIdx + 1, time_ms: ms }) });
@@ -949,7 +952,7 @@ function update(dt) {
     Sound.win();
     const last = level === LEVELS.length - 1;
     const { improved, prev } = recordTime(level, elapsed);
-    if (improved) submitScore(level, Math.round(elapsed * 1000));  // send to global leaderboard
+    if (improved) submitScore(level, Math.round(elapsed * 1000), prev != null);  // send to global leaderboard
     const bestLine = improved
       ? `<span class="best">★ NEW BEST ${elapsed.toFixed(1)}s</span>`
       : `Time ${elapsed.toFixed(1)}s &nbsp; Best <span class="best">${prev.toFixed(1)}s</span>`;
