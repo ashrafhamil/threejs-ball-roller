@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ball Roller</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0d17; font-family: system-ui, sans-serif; }
+  #hud {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    color: #e8ecff; font-size: 14px; line-height: 1.6; user-select: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,.6);
+  }
+  #hud b { color: #6cf0c2; }
+  #banner {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center; flex-direction: column;
+    color: #fff; background: rgba(11,13,23,.72); backdrop-filter: blur(2px);
+    text-align: center; user-select: none;
+  }
+  #banner h1 { font-size: 42px; margin-bottom: 8px; letter-spacing: 1px; }
+  #banner p { font-size: 15px; opacity: .85; }
+  #banner .key { color: #6cf0c2; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div>Level <b id="level">1</b> &nbsp; Time <b id="time">0.0</b>s</div>
+  <div>Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b></div>
+</div>
+<div id="banner">
+  <h1 id="banner-title">Ball Roller</h1>
+  <p id="banner-sub">Press <span class="key">SPACE</span> to start</p>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- Scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d17);
+scene.fog = new THREE.Fog(0x0b0d17, 40, 100);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 250);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- Lights ----------
+scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x223355, 0.7));
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.15);
+sun.position.set(16, 30, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
+sun.shadow.camera.top = 50; sun.shadow.camera.bottom = -50;
+sun.shadow.camera.far = 100;
+scene.add(sun);
+
+// ---------- Ball ----------
+const BALL_R = 0.6;
+const ball = new THREE.Mesh(
+  new THREE.SphereGeometry(BALL_R, 32, 32),
+  new THREE.MeshStandardMaterial({ color: 0x6cf0c2, roughness: 0.3, metalness: 0.25 })
+);
+ball.castShadow = true;
+scene.add(ball);
+
+// ---------- Levels ----------
+// Platform: {x,z,w,d, y, sx?, sz?}
+//   y  = surface height at platform CENTER
+//   sx = slope dy/dx  (surface rises toward +x)
+//   sz = slope dy/dz  (surface rises toward +z)
+//   flat platform omits sx/sz. Ramps connect flush when edge heights match.
+const PLAT_H = 0.8;
+const LEVELS = [
+  { // 1 - narrow winding descent + 90-degree dog-leg turn
+    start: { x: 0, z: 24 }, goalIdx: 4,
+    platforms: [
+      { x: 0,  z: 24, w: 6,  d: 8,  y: 9 },               // start   z 20..28
+      { x: 0,  z: 10, w: 4,  d: 20, y: 4.5, sz: 0.45 },   // narrow ramp z 0..20 (9 -> 0)
+      { x: 0,  z: -4, w: 6,  d: 8,  y: 0 },               // corner  z -8..0
+      { x: 9,  z: -4, w: 14, d: 4,  y: 0 },               // lateral run x 2..16 (turn +x)
+      { x: 18, z: -4, w: 6,  d: 6,  y: 0 },               // goal    x 15..21
+    ],
+  },
+  { // 2 - up ramp -> crest -> GAP (jump) -> landing -> goal
+    start: { x: 0, z: 28 }, goalIdx: 4,
+    platforms: [
+      { x: 0, z: 28,  w: 6, d: 8,  y: 0 },               // start   z 24..32
+      { x: 0, z: 15,  w: 4.5, d: 18, y: 3, sz: -0.333 }, // up ramp z 6..24 (0 -> 6)
+      { x: 0, z: 0,   w: 5, d: 8,  y: 6,                  // crest   z -4..4  -> gap
+        bumps: [ { x: 0, z: 1, amp: 1.4, sig: 1.8 } ] }, // mound to roll over
+      { x: 0, z: -14, w: 6, d: 6,  y: 2 },               // landing z -17..-11  (gap 7 wide)
+      { x: 0, z: -26, w: 6, d: 8,  y: 0 },               // goal    z -30..-22
+    ],
+  },
+  { // 3 - steep banked S-drop (drifts sideways) + jump up to elevated goal
+    start: { x: 0, z: 26 }, goalIdx: 3,
+    platforms: [
+      { x: 0, z: 26, w: 6,   d: 6,  y: 10 },                       // start
+      { x: 0, z: 14, w: 4.5, d: 18, y: 5.5, sz: 0.5, sx: 0.22 },   // steep banked down z 5..23 (10 -> 1), drifts -x
+      { x: 0, z: 0,  w: 5,   d: 10, y: 1 },                        // flat   z -5..5  -> gap
+      { x: 0, z: -16, w: 6,  d: 6,  y: 3 },                        // goal (higher, gap 8 wide -> jump up)
+    ],
+  },
+  { // 4 - double dog-leg zigzag, narrow, turn mastery
+    start: { x: -12, z: 22 }, goalIdx: 6,
+    platforms: [
+      { x: -12, z: 22, w: 6,  d: 6,  y: 6 },               // start
+      { x: -12, z: 10, w: 4,  d: 18, y: 3, sz: 0.333 },    // narrow ramp down (6 -> 0)
+      { x: -12, z: -3, w: 5,  d: 8,  y: 0 },               // corner 1
+      { x: -3,  z: -3, w: 14, d: 4,  y: 0,                 // lateral run +x
+        bumps: [ { x: -6, z: -3, amp: 1.2, sig: 1.6 }, { x: 0, z: -3, amp: 1.2, sig: 1.6 } ] }, // rolling mounds
+      { x: 6,   z: -3, w: 5,  d: 5,  y: 0 },               // corner 2
+      { x: 6,   z: -12,w: 4,  d: 14, y: 0 },               // narrow run -z
+      { x: 6,   z: -22,w: 6,  d: 6,  y: 0 },               // goal
+    ],
+  },
+  { // 5 - opposite banked drops (S-drift), steep, descending below zero
+    start: { x: 0, z: 22 }, goalIdx: 4,
+    platforms: [
+      { x: 0, z: 22, w: 6,   d: 6,  y: 12 },                       // start
+      { x: 0, z: 12, w: 4,   d: 16, y: 8,  sz: 0.5,  sx: 0.25 },   // banked down, drift -x (12 -> 4)
+      { x: 0, z: 0,  w: 6,   d: 10, y: 4 },                        // catch pad
+      { x: 0, z: -13,w: 4,   d: 16, y: 0,  sz: 0.5,  sx: -0.25 },  // banked down, drift +x (4 -> -4)
+      { x: 0, z: -26,w: 6,   d: 6,  y: -4 },                       // goal (sunken)
+    ],
+  },
+  { // 6 - jump gauntlet: precision hops onto small pads across gaps
+    start: { x: 0, z: 24 }, goalIdx: 5,
+    platforms: [
+      { x: 0, z: 24,  w: 6, d: 6, y: 4 },   // start
+      { x: 0, z: 14,  w: 5, d: 5, y: 4 },   // pad (gap 5)
+      { x: 0, z: 4,   w: 5, d: 5, y: 4,     // pad (gap 5)
+        bumps: [ { x: 0, z: 4, amp: 1.5, sig: 1.5 } ] }, // domed pad - harder to stop on
+      { x: 0, z: -6,  w: 5, d: 5, y: 4 },   // pad (gap 5)
+      { x: 0, z: -16, w: 5, d: 5, y: 4 },   // pad (gap 5)
+      { x: 0, z: -26, w: 6, d: 6, y: 4 },   // goal
+    ],
+  },
+  { // 7 - narrow banked drift + big gap + dog-leg turn (combo)
+    start: { x: 0, z: 24 }, goalIdx: 5,
+    platforms: [
+      { x: 0,  z: 24, w: 5,   d: 6,  y: 8 },                        // start
+      { x: 0,  z: 13, w: 3.5, d: 16, y: 4.5, sz: 0.4375, sx: 0.2 }, // narrow banked down (8 -> 1)
+      { x: 0,  z: -1, w: 4.5, d: 6,  y: 1 },                        // small pad -> gap
+      { x: 0,  z: -14,w: 4.5, d: 5,  y: 1 },                        // landing (gap 7.5)
+      { x: 8,  z: -14,w: 12,  d: 4,  y: 1 },                        // lateral turn +x
+      { x: 16, z: -14,w: 6,   d: 6,  y: 1 },                        // goal
+    ],
+  },
+  { // 8 - FINAL: steepest, narrowest, banked both ways, multi-jump, climb to peak
+    start: { x: 0, z: 28 }, goalIdx: 5,
+    platforms: [
+      { x: 0, z: 28, w: 5,   d: 6,  y: 14 },                        // start
+      { x: 0, z: 17, w: 3.5, d: 16, y: 9,  sz: 0.5,  sx: 0.28,      // steep banked down, drift -x (14 -> 5)
+        bumps: [ { x: 0, z: 20, amp: 1.1, sig: 1.6 }, { x: 0, z: 13, amp: 1.1, sig: 1.6 } ] }, // bumps on the steep ramp
+      { x: 0, z: 4,  w: 4,   d: 5,  y: 6 },                         // tiny pad -> gap
+      { x: 0, z: -8, w: 3.5, d: 14, y: 9,  sz: -0.4285, sx: -0.28 },// banked UP, drift +x (6 -> 12)
+      { x: 0, z: -20,w: 4,   d: 5,  y: 12 },                        // narrow pad -> gap
+      { x: 0, z: -30,w: 5,   d: 5,  y: 12 },                        // goal peak
+    ],
+  },
+];
+
+const platMat  = new THREE.MeshStandardMaterial({ color: 0x36406e, roughness: 0.92 });
+const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0.9 });
+const hillMat   = new THREE.MeshStandardMaterial({ color: 0x3f7d55, roughness: 0.95, side: THREE.DoubleSide });
+const UP = new THREE.Vector3(0, 1, 0);
+
+let platforms = [];      // physics: {minX,maxX,minZ,maxZ,y,cx,cz,sx,sz,bumps}
+let platformMeshes = [];
+let goalMesh = null;
+const goalPos = new THREE.Vector3();
+
+// full surface height at (x,z): base slope plane + local gaussian hills
+function surfHeight(p, x, z) {
+  let h = p.y + p.sx * (x - p.cx) + p.sz * (z - p.cz);
+  if (p.bumps) for (const b of p.bumps) {
+    const dx = x - b.x, dz = z - b.z;
+    h += b.amp * Math.exp(-(dx * dx + dz * dz) / (2 * b.sig * b.sig));
+  }
+  return h;
+}
+// surface normal via finite-difference gradient (accounts for slope + bumps)
+function surfNormal(p, x, z, out) {
+  const e = 0.15;
+  const hL = surfHeight(p, x - e, z), hR = surfHeight(p, x + e, z);
+  const hD = surfHeight(p, x, z - e), hU = surfHeight(p, x, z + e);
+  return out.set(-(hR - hL) / (2 * e), 1, -(hU - hD) / (2 * e)).normalize();
+}
+
+function clearLevel() {
+  platformMeshes.forEach(m => scene.remove(m));
+  platformMeshes = [];
+  platforms = [];
+  if (goalMesh) { scene.remove(goalMesh); goalMesh = null; }
+}
+
+function buildLevel(idx) {
+  clearLevel();
+  const lvl = LEVELS[idx];
+  lvl.platforms.forEach((p, i) => {
+    const sx = p.sx || 0, sz = p.sz || 0;
+    const isRamp = sx !== 0 || sz !== 0;
+    const geo = new THREE.BoxGeometry(p.w, PLAT_H, p.d);
+    const mesh = new THREE.Mesh(geo, isRamp ? rampMat : platMat);
+    // orient so top face normal = (-sx, 1, -sz)
+    const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
+    mesh.quaternion.setFromUnitVectors(UP, normal);
+    // center of the tilted slab: drop half-thickness along its own normal
+    mesh.position.set(
+      p.x - normal.x * PLAT_H / 2,
+      p.y - normal.y * PLAT_H / 2,
+      p.z - normal.z * PLAT_H / 2
+    );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    platformMeshes.push(mesh);
+
+    const phys = {
+      minX: p.x - p.w / 2, maxX: p.x + p.w / 2,
+      minZ: p.z - p.d / 2, maxZ: p.z + p.d / 2,
+      cx: p.x, cz: p.z, y: p.y, sx, sz, bumps: p.bumps || null,
+    };
+    platforms.push(phys);
+
+    // hills on the platform: displaced top surface matching the physics field
+    if (p.bumps) {
+      const segW = Math.max(2, Math.ceil(p.w * 2));
+      const segD = Math.max(2, Math.ceil(p.d * 2));
+      const hg = new THREE.PlaneGeometry(p.w, p.d, segW, segD);
+      hg.rotateX(-Math.PI / 2);
+      const pos = hg.attributes.position;
+      for (let v = 0; v < pos.count; v++) {
+        const wx = p.x + pos.getX(v), wz = p.z + pos.getZ(v);
+        pos.setY(v, surfHeight(phys, wx, wz));
+      }
+      pos.needsUpdate = true;
+      hg.computeVertexNormals();
+      const hillMesh = new THREE.Mesh(hg, hillMat);
+      hillMesh.position.set(p.x, 0, p.z);
+      hillMesh.castShadow = true;
+      hillMesh.receiveShadow = true;
+      scene.add(hillMesh);
+      platformMeshes.push(hillMesh);
+    }
+
+    if (i === lvl.goalIdx) {
+      goalPos.set(p.x, p.y, p.z);
+      goalMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.5, 1.5, 0.35, 32),
+        new THREE.MeshStandardMaterial({ color: 0x35d07f, emissive: 0x1c7a48, emissiveIntensity: 0.7, roughness: 0.4 })
+      );
+      goalMesh.position.set(p.x, p.y + 0.18, p.z);
+      goalMesh.receiveShadow = true;
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(1.8, 0.11, 12, 40),
+        new THREE.MeshStandardMaterial({ color: 0x6cf0c2, emissive: 0x35d07f, emissiveIntensity: 1 })
+      );
+      ring.rotation.x = Math.PI / 2; ring.position.y = 1.3;
+      goalMesh.add(ring);
+      scene.add(goalMesh);
+    }
+  });
+
+  const s = lvl.platforms[0];
+  ballPos.set(lvl.start.x, s.y + BALL_R, lvl.start.z);
+  vel.set(0, 0, 0);
+  ball.position.copy(ballPos);
+}
+
+// pick supporting platform: contains (x,z), highest plane <= ball top
+function support(x, z, ballY) {
+  let best = null, bestY = -Infinity;
+  for (const p of platforms) {
+    if (x < p.minX || x > p.maxX || z < p.minZ || z > p.maxZ) continue;
+    const ph = surfHeight(p, x, z);
+    if (ph <= ballY - BALL_R + 0.5 && ph > bestY) { bestY = ph; best = p; }
+  }
+  return best;
+}
+
+// ---------- Physics ----------
+const ballPos = new THREE.Vector3();
+const vel = new THREE.Vector3();
+const GRAVITY = 38;
+const INPUT_ACCEL = 30;
+const MAX_SPEED = 22;
+const GROUND_FRICTION = 1.6;
+const JUMP_V = 15;
+const normal = new THREE.Vector3();
+
+let level = 0, elapsed = 0;
+let state = 'menu'; // menu | play | win | fall
+let grounded = false;
+
+// ---------- Input ----------
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') {
+    if (state === 'menu') startLevel(level);
+    else if (state === 'win') startLevel(nextLevel());
+    else if (state === 'play' && grounded) { vel.y = JUMP_V; grounded = false; }
+  }
+  if (e.code === 'KeyR') startLevel(level);
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+function nextLevel() { level = (level + 1) % LEVELS.length; return level; }
+
+// ---------- Flow ----------
+const banner = document.getElementById('banner');
+const bannerTitle = document.getElementById('banner-title');
+const bannerSub = document.getElementById('banner-sub');
+const elLevel = document.getElementById('level');
+const elTime = document.getElementById('time');
+function showBanner(t, s) { bannerTitle.textContent = t; bannerSub.innerHTML = s; banner.style.display = 'flex'; }
+function hideBanner() { banner.style.display = 'none'; }
+
+function startLevel(idx) {
+  level = idx;
+  buildLevel(level);
+  elapsed = 0;
+  state = 'play';
+  hideBanner();
+  elLevel.textContent = level + 1;
+}
+
+// ---------- Camera ----------
+const camOffset = new THREE.Vector3(0, 13, 18);
+const camTarget = new THREE.Vector3();
+
+// ---------- Update ----------
+function update(dt) {
+  if (state !== 'play') return;
+  elapsed += dt;
+  elTime.textContent = elapsed.toFixed(1);
+
+  let ix = 0, iz = 0;
+  if (keys['ArrowUp'] || keys['KeyW']) iz -= 1;
+  if (keys['ArrowDown'] || keys['KeyS']) iz += 1;
+  if (keys['ArrowLeft'] || keys['KeyA']) ix -= 1;
+  if (keys['ArrowRight'] || keys['KeyD']) ix += 1;
+  const il = Math.hypot(ix, iz);
+  if (il > 0) { ix /= il; iz /= il; }
+
+  const p = support(ballPos.x, ballPos.z, ballPos.y);
+  grounded = p && vel.y <= 0.01 && ballPos.y <= surfHeight(p, ballPos.x, ballPos.z) + BALL_R + 0.12;
+
+  if (grounded) {
+    surfNormal(p, ballPos.x, ballPos.z, normal);
+    // gravity projected onto slope tangent -> roll down the incline / over hills
+    const gDotN = -GRAVITY * normal.y;
+    vel.x += (-gDotN * normal.x) * dt;
+    vel.z += (-gDotN * normal.z) * dt;
+    // steering
+    vel.x += ix * INPUT_ACCEL * dt;
+    vel.z += iz * INPUT_ACCEL * dt;
+    // friction
+    const damp = Math.max(0, 1 - GROUND_FRICTION * dt);
+    vel.x *= damp; vel.z *= damp;
+    const hs = Math.hypot(vel.x, vel.z);
+    if (hs > MAX_SPEED) { vel.x *= MAX_SPEED / hs; vel.z *= MAX_SPEED / hs; }
+    // snap to surface
+    ballPos.y = surfHeight(p, ballPos.x, ballPos.z) + BALL_R;
+    if (vel.y < 0) vel.y = 0;
+  } else {
+    vel.y -= GRAVITY * dt;
+  }
+
+  ballPos.x += vel.x * dt;
+  ballPos.y += vel.y * dt;
+  ballPos.z += vel.z * dt;
+
+  ball.rotation.z -= vel.x * dt / BALL_R;
+  ball.rotation.x += vel.z * dt / BALL_R;
+  ball.position.copy(ballPos);
+
+  if (ballPos.y < -20) {
+    state = 'fall';
+    showBanner('Fell off!', 'Press <span class="key">R</span> to retry');
+    return;
+  }
+  const dx = ballPos.x - goalPos.x, dz = ballPos.z - goalPos.z;
+  if (dx * dx + dz * dz < 1.8 * 1.8 && ballPos.y <= goalPos.y + BALL_R + 0.6) {
+    state = 'win';
+    const last = level === LEVELS.length - 1;
+    showBanner(last ? 'All levels clear! 🏁' : 'Level clear!',
+      `Time ${elapsed.toFixed(1)}s &nbsp; <span class="key">SPACE</span> for ${last ? 'level 1' : 'next'}`);
+  }
+}
+
+function render() {
+  camTarget.lerp(ballPos, 0.12);
+  camera.position.lerp(camTarget.clone().add(camOffset), 0.09);
+  camera.lookAt(camTarget.x, camTarget.y, camTarget.z - 3);
+  if (goalMesh) goalMesh.rotation.y += 0.015;
+  renderer.render(scene, camera);
+}
+
+// ---------- Boot ----------
+const clock = new THREE.Clock();
+buildLevel(0);
+showBanner('Ball Roller', 'Roll down the ramps to the <span class="key">green pad</span>.<br><span class="key">SPACE</span> to start');
+
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  update(dt);
+  render();
+  requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>
