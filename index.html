@@ -78,6 +78,10 @@
   }
   #levelpick:focus { outline: 1px solid #6cf0c2; }
   #levelpick option { background: #14182c; color: #e6ecff; }
+  #hud .kbd {
+    display: inline-block; border: 1px solid rgba(150,170,240,.55); border-radius: 4px;
+    padding: 0 6px; margin: 0 1px; font-weight: 700; color: #6cf0c2; font-family: ui-monospace, monospace;
+  }
   #scores {
     position: fixed; top: 16px; right: 16px; z-index: 10;
     color: #cdd6ff; font-size: 13px; user-select: none;
@@ -99,7 +103,7 @@
 <body>
 <div id="hud">
   <div>Level <select id="levelpick"></select> &nbsp; Time <b id="time">0.0</b>s</div>
-  <div class="keys">Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b> &nbsp; Level <b>[ ]</b> &nbsp; Mute <b>M</b></div>
+  <div class="keys">Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b> &nbsp; Level <span class="kbd">[</span> <span class="kbd">]</span> &nbsp; Mute <b>M</b></div>
 </div>
 <div id="scores">
   <h2>Best Times</h2>
