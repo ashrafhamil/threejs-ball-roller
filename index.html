@@ -1099,14 +1099,14 @@ function update(dt) {
         if (hitPf.vel) carry.set(hitPf.vel.x, hitPf.vel.y, hitPf.vel.z); else carry.set(0, 0, 0);
       }
     }
-    // 2) side wall (flat/ramp/mover edges) — block when the ball SURFACE hits the face
+    // 2) side wall — block when the ball SURFACE hits a platform's edge face.
+    //    (hills too: the terrain top is handled above; this walls the base slab.)
     if (!grounded) {
       for (const pf of platforms) {
-        if (pf.bumps) continue;                                    // hills have no vertical walls
         if (ballPos.x < pf.minX - R || ballPos.x > pf.maxX + R || ballPos.z < pf.minZ - R || ballPos.z > pf.maxZ + R) continue;
         const surf = surfHeight(pf, ballPos.x, ballPos.z);
         if (ballPos.y - R >= surf - 0.02) continue;                // above the top: no wall
-        if (ballPos.y + R <= pf.y - PLAT_H) continue;              // entirely below the slab: pass under
+        if (ballPos.y + R <= pf.y - PLAT_H - (pf.bumps ? 0.4 : 0)) continue;  // below the slab: pass under
         const wasOutX = prevX0 < pf.minX - R || prevX0 > pf.maxX + R;
         const wasOutZ = prevZ0 < pf.minZ - R || prevZ0 > pf.maxZ + R;
         if (wasOutX) { ballPos.x = (prevX0 < pf.minX) ? pf.minX - R : pf.maxX + R; if ((prevX0 < pf.minX) === (vel.x > 0)) vel.x = 0; }
