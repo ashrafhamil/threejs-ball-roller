@@ -795,7 +795,7 @@ function buildLevel(idx) {
 function support(x, z, ballY) {
   let best = null, bestY = -Infinity;
   for (const p of platforms) {
-    if (x < p.minX || x > p.maxX || z < p.minZ || z > p.maxZ) continue;
+    if (x < p.minX - BALL_R || x > p.maxX + BALL_R || z < p.minZ - BALL_R || z > p.maxZ + BALL_R) continue;
     const ph = surfHeight(p, x, z);
     if (ph <= ballY - BALL_R + 0.5 && ph > bestY) { bestY = ph; best = p; }
   }
@@ -806,7 +806,7 @@ function support(x, z, ballY) {
 function groundUnder(x, z) {
   let by = -Infinity, found = false;
   for (const p of platforms) {
-    if (x < p.minX || x > p.maxX || z < p.minZ || z > p.maxZ) continue;
+    if (x < p.minX - BALL_R || x > p.maxX + BALL_R || z < p.minZ - BALL_R || z > p.maxZ + BALL_R) continue;
     const ph = surfHeight(p, x, z);
     if (ph > by) { by = ph; found = true; }
   }
@@ -1075,36 +1075,42 @@ function update(dt) {
   ballPos.z += vel.z * dt;
 
   if (!grounded) {
-    // 1) landing: the ball's bottom dropped onto a platform top this frame
-    //    (fast fall or arriving above the edge with enough arc) -> land on top
-    if (vel.y <= 0.01) {
+    const R = BALL_R;
+    // 0) hills are SOLID mounds -> ride on the top surface, never slip underneath
+    for (const pf of platforms) {
+      if (!pf.bumps) continue;
+      if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
+      const surf = surfHeight(pf, ballPos.x, ballPos.z);
+      if (ballPos.y - R < surf && ballPos.y + R > pf.y - PLAT_H - 0.4) {
+        ballPos.y = surf + R; if (vel.y < 0) vel.y = 0;
+        grounded = true; wasGrounded = true; carry.set(0, 0, 0);
+      }
+    }
+    // 1) landing on a platform top — footprint inflated by R (collide at ball surface)
+    if (!grounded && vel.y <= 0.01) {
       let bestSurf = -Infinity, hitPf = null;
       for (const pf of platforms) {
-        if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
+        if (ballPos.x < pf.minX - R || ballPos.x > pf.maxX + R || ballPos.z < pf.minZ - R || ballPos.z > pf.maxZ + R) continue;
         const surf = surfHeight(pf, ballPos.x, ballPos.z);
-        if (prevBottom >= surf - 0.05 && ballPos.y - BALL_R < surf && surf > bestSurf) { bestSurf = surf; hitPf = pf; }
+        if (prevBottom >= surf - 0.05 && ballPos.y - R < surf && surf > bestSurf) { bestSurf = surf; hitPf = pf; }
       }
       if (hitPf) {
-        ballPos.y = bestSurf + BALL_R;
-        vel.y = 0; grounded = true; wasGrounded = true;
+        ballPos.y = bestSurf + R; vel.y = 0; grounded = true; wasGrounded = true;
         if (hitPf.vel) carry.set(hitPf.vel.x, hitPf.vel.y, hitPf.vel.z); else carry.set(0, 0, 0);
       }
     }
-    // 2) side wall: ball entered a platform's footprint from the side while below
-    //    its top (didn't clear the edge) -> block like a wall, ball drops down it
+    // 2) side wall (flat/ramp/mover edges) — block when the ball SURFACE hits the face
     if (!grounded) {
       for (const pf of platforms) {
-        if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
+        if (pf.bumps) continue;                                    // hills have no vertical walls
+        if (ballPos.x < pf.minX - R || ballPos.x > pf.maxX + R || ballPos.z < pf.minZ - R || ballPos.z > pf.maxZ + R) continue;
         const surf = surfHeight(pf, ballPos.x, ballPos.z);
-        if (ballPos.y - BALL_R >= surf - 0.02) continue;          // above the top: no wall
-        // slab bottom measured from the BASE (not the bumpy surface) so the ball
-        // can't slip under a hill; still lets it pass under a raised elevator
-        const slabBottom = pf.y - PLAT_H - (pf.bumps ? 0.4 : 0);
-        if (ballPos.y + BALL_R <= slabBottom) continue;           // entirely below the slab: pass under
-        const wasOutX = prevX0 < pf.minX || prevX0 > pf.maxX;
-        const wasOutZ = prevZ0 < pf.minZ || prevZ0 > pf.maxZ;
-        if (wasOutX) { ballPos.x = (prevX0 < pf.minX) ? pf.minX - 0.01 : pf.maxX + 0.01; if ((prevX0 < pf.minX) === (vel.x > 0)) vel.x = 0; }
-        if (wasOutZ) { ballPos.z = (prevZ0 < pf.minZ) ? pf.minZ - 0.01 : pf.maxZ + 0.01; if ((prevZ0 < pf.minZ) === (vel.z > 0)) vel.z = 0; }
+        if (ballPos.y - R >= surf - 0.02) continue;                // above the top: no wall
+        if (ballPos.y + R <= pf.y - PLAT_H) continue;              // entirely below the slab: pass under
+        const wasOutX = prevX0 < pf.minX - R || prevX0 > pf.maxX + R;
+        const wasOutZ = prevZ0 < pf.minZ - R || prevZ0 > pf.maxZ + R;
+        if (wasOutX) { ballPos.x = (prevX0 < pf.minX) ? pf.minX - R : pf.maxX + R; if ((prevX0 < pf.minX) === (vel.x > 0)) vel.x = 0; }
+        if (wasOutZ) { ballPos.z = (prevZ0 < pf.minZ) ? pf.minZ - R : pf.maxZ + R; if ((prevZ0 < pf.minZ) === (vel.z > 0)) vel.z = 0; }
       }
     }
   }
