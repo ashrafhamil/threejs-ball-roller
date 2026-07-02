@@ -1006,7 +1006,10 @@ function update(dt) {
   }
 
   const p = support(ballPos.x, ballPos.z, ballPos.y);
-  grounded = p && vel.y <= 0.01 && ballPos.y <= surfHeight(p, ballPos.x, ballPos.z) + BALL_R + 0.12;
+  // stick tolerance covers how far the surface can drop beneath the ball in one
+  // frame on a fast/steep descending ramp (slope * speed * dt) — else the ball
+  // reads as airborne every frame and false-triggers a fall
+  grounded = p && vel.y <= 0.01 && ballPos.y <= surfHeight(p, ballPos.x, ballPos.z) + BALL_R + 1.0;
 
   if (grounded) {
     surfNormal(p, ballPos.x, ballPos.z, normal);
