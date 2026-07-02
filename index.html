@@ -7,7 +7,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0d17; font-family: system-ui, sans-serif; touch-action: none; -webkit-user-select: none; }
-  #touch { position: fixed; inset: 0; z-index: 16; pointer-events: none; display: none; }
+  #touch { position: fixed; inset: 0; z-index: 21; pointer-events: none; display: none; }
   #touch.on { display: block; }
   #joy {
     position: absolute; left: 22px; bottom: 26px; width: 120px; height: 120px; border-radius: 50%;
@@ -24,6 +24,18 @@
     display: flex; align-items: center; justify-content: center; pointer-events: auto;
   }
   #jump:active { background: rgba(108,240,194,.32); }
+  #restart {
+    position: absolute; right: 42px; bottom: 144px; width: 54px; height: 54px; border-radius: 50%;
+    background: rgba(150,170,240,.14); border: 2px solid rgba(150,170,240,.5);
+    color: #dfe6ff; font-size: 22px; display: flex; align-items: center; justify-content: center; pointer-events: auto;
+  }
+  #restart:active { background: rgba(150,170,240,.3); }
+  body.touch .keys { display: none; }
+  @media (max-width: 680px) {
+    #scores { display: none; }
+    #hud { font-size: 12px; }
+    #lbbtn { top: 46px; }
+  }
   #lbbtn {
     position: fixed; left: 16px; top: 72px; z-index: 12;
     background: rgba(40,48,90,.7); color: #e6ecff; border: 1px solid rgba(150,170,240,.4);
@@ -87,7 +99,7 @@
 <body>
 <div id="hud">
   <div>Level <select id="levelpick"></select> &nbsp; Time <b id="time">0.0</b>s</div>
-  <div>Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b> &nbsp; Level <b>[ ]</b> &nbsp; Mute <b>M</b></div>
+  <div class="keys">Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b> &nbsp; Level <b>[ ]</b> &nbsp; Mute <b>M</b></div>
 </div>
 <div id="scores">
   <h2>Best Times</h2>
@@ -96,6 +108,7 @@
 <div id="touch">
   <div id="joy"><div id="knob"></div></div>
   <div id="jump">JUMP</div>
+  <div id="restart">↺</div>
 </div>
 <button id="lbbtn">🏆 Leaderboard</button>
 <div id="lbpanel">
@@ -277,7 +290,7 @@ document.getElementById('lbbtn').addEventListener('click', () => openLeaderboard
 const touchMove = { x: 0, z: 0, active: false };
 {
   const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-  if (isTouch) document.getElementById('touch').classList.add('on');
+  if (isTouch) { document.getElementById('touch').classList.add('on'); document.body.classList.add('touch'); }
   const joy = document.getElementById('joy'), knob = document.getElementById('knob');
   let joyId = null, cx = 0, cy = 0; const MAX = 45;
   function move(e) {
@@ -309,6 +322,9 @@ const touchMove = { x: 0, z: 0, active: false };
     e.preventDefault(); Sound.resume();
     if (state === 'play' && grounded) { vel.y = JUMP_V; grounded = false; Sound.jump(); }
     else if (state === 'win') startLevel(nextLevel());
+  }, { passive: false });
+  document.getElementById('restart').addEventListener('touchstart', e => {
+    e.preventDefault(); Sound.resume(); startLevel(level);
   }, { passive: false });
 }
 
@@ -813,6 +829,7 @@ function steer(dx, dz, accel, grip, dt) {
 let level = 0, elapsed = 0;
 let state = 'menu'; // menu | play | win | fall
 let grounded = false, wasGrounded = false, sndGrounded = false;
+let lastGroundY = 0; // y where the ball last stood — fall is judged relative to this
 let hoverT = 0; // free-running clock for the edge-of-galaxy drift
 const carry = new THREE.Vector3(); // velocity of the platform currently underfoot
 
@@ -844,6 +861,7 @@ const bannerSub = document.getElementById('banner-sub');
 const elTime = document.getElementById('time');
 function showBanner(t, s) { bannerTitle.textContent = t; bannerSub.innerHTML = s; banner.style.display = 'flex'; }
 function hideBanner() { banner.style.display = 'none'; }
+banner.addEventListener('click', () => { if (state === 'win') startLevel(nextLevel()); });
 
 // ---------- Scoreboard (best time per level, persisted) ----------
 const BEST_KEY = 'ballRoller.best.v1';
@@ -895,6 +913,7 @@ function startLevel(idx) {
   buildLevel(level);
   elapsed = 0;
   hoverT = 0;
+  lastGroundY = ballPos.y;
   state = 'play';
   hideBanner();
   levelPick.value = level;
@@ -920,6 +939,26 @@ let camYaw = 0, camPitch = 0.62, camDist = 22;
     e.preventDefault();
     camDist = Math.min(60, Math.max(8, camDist + e.deltaY * 0.02));
   }, { passive: false });
+
+  // touch: one-finger drag on the canvas orbits, two-finger pinch zooms
+  let camTouchId = null, tx = 0, ty = 0, pinch = null;
+  const dist2 = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  dom.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) { camTouchId = e.touches[0].identifier; tx = e.touches[0].clientX; ty = e.touches[0].clientY; }
+    else if (e.touches.length === 2) { pinch = dist2(e.touches[0], e.touches[1]); }
+  }, { passive: true });
+  dom.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && pinch != null) {
+      const d = dist2(e.touches[0], e.touches[1]);
+      camDist = Math.min(60, Math.max(8, camDist * (pinch / d))); pinch = d; return;
+    }
+    let t = null; for (const x of e.touches) if (x.identifier === camTouchId) t = x;
+    if (!t) return;
+    camYaw -= (t.clientX - tx) * 0.006;
+    camPitch = Math.min(1.45, Math.max(-1.35, camPitch + (t.clientY - ty) * 0.005));
+    tx = t.clientX; ty = t.clientY;
+  }, { passive: true });
+  dom.addEventListener('touchend', e => { camTouchId = null; if (e.touches.length < 2) pinch = null; });
 }
 
 // ---------- Update ----------
@@ -1055,6 +1094,7 @@ function update(dt) {
   // sound: land thud on touchdown, rolling rumble scaled by ground speed
   if (grounded && !sndGrounded) Sound.land();
   sndGrounded = grounded;
+  if (grounded) lastGroundY = ballPos.y;   // remember where we last stood
   Sound.roll(Math.hypot(vel.x, vel.z), grounded);
 
   ball.rotation.z -= vel.x * dt / BALL_R;
@@ -1063,7 +1103,7 @@ function update(dt) {
   ball.position.copy(ballPos);
 
   // begin the plunge once clearly off the course -> fall with the ball
-  if (state === 'play' && !grounded && ballPos.y < -7) { state = 'falling'; Sound.fall(); }
+  if (state === 'play' && !grounded && ballPos.y < lastGroundY - 12) { state = 'falling'; Sound.fall(); }
   if (state !== 'play') return; // no goal check while falling / drifting
   const dx = ballPos.x - goalPos.x, dz = ballPos.z - goalPos.z;
   if (dx * dx + dz * dz < 1.8 * 1.8 && ballPos.y <= goalPos.y + BALL_R + 0.6) {
