@@ -24,6 +24,25 @@
     display: flex; align-items: center; justify-content: center; pointer-events: auto;
   }
   #jump:active { background: rgba(108,240,194,.32); }
+  #lbbtn {
+    position: fixed; left: 16px; top: 72px; z-index: 12;
+    background: rgba(40,48,90,.7); color: #e6ecff; border: 1px solid rgba(150,170,240,.4);
+    border-radius: 7px; padding: 5px 10px; font-size: 12px; font-family: inherit; cursor: pointer;
+  }
+  #lbbtn:hover { background: rgba(78,92,164,.9); }
+  #lbpanel {
+    position: fixed; inset: 0; z-index: 25; display: none;
+    align-items: center; justify-content: center; flex-direction: column;
+    background: rgba(11,13,23,.82); backdrop-filter: blur(3px); color: #e8ecff; user-select: none;
+  }
+  #lbpanel.on { display: flex; }
+  #lbpanel h2 { font-size: 22px; margin-bottom: 14px; color: #6cf0c2; letter-spacing: 1px; }
+  #lb-list { min-width: 300px; font-size: 15px; }
+  #lb-list .row { display: flex; justify-content: space-between; gap: 24px; padding: 5px 12px; border-radius: 6px; }
+  #lb-list .row.me { background: rgba(108,240,194,.16); color: #fff; }
+  #lb-list .row .rk { color: #8ea0d8; width: 26px; }
+  #lb-list .row .tm { color: #6cf0c2; font-variant-numeric: tabular-nums; }
+  #lbpanel .hint { margin-top: 16px; font-size: 12px; opacity: .7; }
   #hud {
     position: fixed; top: 16px; left: 16px; z-index: 10;
     color: #e8ecff; font-size: 14px; line-height: 1.6; user-select: none;
@@ -76,6 +95,12 @@
 <div id="touch">
   <div id="joy"><div id="knob"></div></div>
   <div id="jump">JUMP</div>
+</div>
+<button id="lbbtn">🏆 Leaderboard</button>
+<div id="lbpanel">
+  <h2 id="lb-title">Leaderboard</h2>
+  <div id="lb-list">Loading…</div>
+  <p class="hint">Tap anywhere / press <span class="key" style="color:#6cf0c2">L</span> to close</p>
 </div>
 <div id="banner">
   <h1 id="banner-title">Ball Roller</h1>
@@ -201,6 +226,48 @@ const Sound = (() => {
     toggleMute() { muted = !muted; if (master) master.gain.setTargetAtTime(muted ? 0 : 0.55, ctx.currentTime, 0.05); return muted; },
   };
 })();
+
+// ---------- Global leaderboard (Supabase REST, per-level best times) ----------
+const LB_URL = 'https://qeimeyocuusfukyaqqsp.supabase.co/rest/v1/ballroller_scores';
+const LB_KEY = 'sb_publishable_Hc_WIXxTV9YqJ__CNRhBBA_2NVjIylQ';
+const LB_HDR = { apikey: LB_KEY, Authorization: 'Bearer ' + LB_KEY, 'Content-Type': 'application/json' };
+let playerName = localStorage.getItem('ballRoller.name') || '';
+function ensureName() {
+  if (!playerName) {
+    const n = (prompt('Enter a name for the leaderboard:', '') || '').trim().slice(0, 24);
+    if (n) { playerName = n; localStorage.setItem('ballRoller.name', n); }
+  }
+  return playerName;
+}
+async function submitScore(levelIdx, ms) {
+  const name = ensureName(); if (!name) return;
+  try {
+    await fetch(LB_URL, { method: 'POST', headers: { ...LB_HDR, Prefer: 'return=minimal' },
+      body: JSON.stringify({ name, level: levelIdx + 1, time_ms: ms }) });
+  } catch (e) {}
+}
+async function fetchTop(levelIdx) {
+  try {
+    const r = await fetch(`${LB_URL}?select=name,time_ms&level=eq.${levelIdx + 1}&order=time_ms.asc&limit=10`, { headers: LB_HDR });
+    return r.ok ? await r.json() : [];
+  } catch (e) { return []; }
+}
+function escHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+const lbPanel = document.getElementById('lbpanel');
+const lbList = document.getElementById('lb-list');
+const lbTitleEl = document.getElementById('lb-title');
+async function openLeaderboard(levelIdx) {
+  lbTitleEl.textContent = `Leaderboard — Level ${levelIdx + 1}`;
+  lbList.innerHTML = 'Loading…';
+  lbPanel.classList.add('on');
+  const rows = await fetchTop(levelIdx);
+  lbList.innerHTML = rows.length
+    ? rows.map((r, i) => `<div class="row${r.name === playerName ? ' me' : ''}"><span class="rk">${i + 1}</span><span>${escHtml(r.name)}</span><span class="tm">${(r.time_ms / 1000).toFixed(1)}s</span></div>`).join('')
+    : '<div class="row">No times yet — be the first!</div>';
+}
+function closeLeaderboard() { lbPanel.classList.remove('on'); }
+lbPanel.addEventListener('click', closeLeaderboard);
+document.getElementById('lbbtn').addEventListener('click', () => openLeaderboard(level));
 
 // ---------- Touch controls (mobile): virtual joystick + jump button ----------
 const touchMove = { x: 0, z: 0, active: false };
@@ -638,6 +705,8 @@ addEventListener('keydown', e => {
     else if (state === 'play' && grounded) { vel.y = JUMP_V; grounded = false; Sound.jump(); }
   }
   if (e.code === 'KeyM') Sound.toggleMute();
+  if (e.code === 'KeyL') { lbPanel.classList.contains('on') ? closeLeaderboard() : openLeaderboard(level); }
+  if (e.code === 'Escape') closeLeaderboard();
   if (e.code === 'KeyR') startLevel(level);
   if (e.code === 'BracketRight') startLevel(Math.min(LEVELS.length - 1, level + 1)); // next level
   if (e.code === 'BracketLeft') startLevel(Math.max(0, level - 1));                  // prev level
@@ -880,11 +949,12 @@ function update(dt) {
     Sound.win();
     const last = level === LEVELS.length - 1;
     const { improved, prev } = recordTime(level, elapsed);
+    if (improved) submitScore(level, Math.round(elapsed * 1000));  // send to global leaderboard
     const bestLine = improved
       ? `<span class="best">★ NEW BEST ${elapsed.toFixed(1)}s</span>`
       : `Time ${elapsed.toFixed(1)}s &nbsp; Best <span class="best">${prev.toFixed(1)}s</span>`;
     showBanner(last ? 'All levels clear! 🏁' : 'Level clear!',
-      `${bestLine}<br><span class="key">SPACE</span> for ${last ? 'level 1' : 'next'} &nbsp; <span class="key">R</span> to retry`);
+      `${bestLine}<br><span class="key">SPACE</span> next &nbsp; <span class="key">R</span> retry &nbsp; <span class="key">L</span> leaderboard`);
   }
 }
 
