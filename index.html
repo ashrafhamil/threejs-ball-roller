@@ -343,8 +343,10 @@ sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
 sun.shadow.camera.top = 50; sun.shadow.camera.bottom = -50;
-sun.shadow.camera.far = 100;
+sun.shadow.camera.far = 120;
 scene.add(sun);
+scene.add(sun.target);            // shadow frustum follows the ball (set each frame)
+const sunOffset = new THREE.Vector3(16, 30, 12);
 
 // visible sun: crisp core + soft radial glow sprite, far off in the light's direction
 {
@@ -1148,6 +1150,11 @@ function render() {
   );
   camera.position.lerp(camDesired, 0.12);
   camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
+  // keep the shadow frustum centered on the ball so shadows never drop out
+  sun.position.copy(ballPos).add(sunOffset);
+  sun.target.position.copy(ballPos);
+  sun.target.updateMatrixWorld();
+
   if (goalMesh) goalMesh.rotation.y += 0.015;
   stars.rotation.y += 0.00006;
   starMat.uniforms.uTime.value += 0.016;
