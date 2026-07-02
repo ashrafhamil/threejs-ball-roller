@@ -501,6 +501,64 @@ const LEVELS = [
       { x: 0, z: -32,w: 6,   d: 6,  y: 12 },                                     // goal peak
     ],
   },
+  { // 12 - banked S-gauntlet with bumps (drift both ways, descending)
+    start: { x: 0, z: 26 }, goalIdx: 4,
+    platforms: [
+      { x: 0, z: 26, w: 6, d: 6,  y: 10 },                                                // start
+      { x: 0, z: 14, w: 4, d: 16, y: 6, sz: 0.5, sx: 0.22,                                // banked down, drift -x (10 -> 2)
+        bumps: [ { x: 0, z: 18, amp: 1, sig: 1.6 }, { x: 0, z: 11, amp: 1, sig: 1.6 } ] },
+      { x: 0, z: 0,  w: 6, d: 8,  y: 2 },                                                 // flat pad
+      { x: 0, z: -13,w: 4, d: 16, y: -2, sz: 0.5, sx: -0.22,                              // banked down, drift +x (2 -> -6)
+        bumps: [ { x: 0, z: -9, amp: 1, sig: 1.6 }, { x: 0, z: -16, amp: 1, sig: 1.6 } ] },
+      { x: 0, z: -26,w: 6, d: 6,  y: -6 },                                                // goal (sunken)
+    ],
+  },
+  { // 13 - elevator chain: ride two lifts up to the high goal
+    start: { x: 0, z: 24 }, goalIdx: 5,
+    platforms: [
+      { x: 0, z: 24, w: 7, d: 8, y: 0 },                                          // start
+      { x: 0, z: 12, w: 5, d: 5, y: 4, move: { axis: 'y', amp: 4, period: 3.5 } },// ELEVATOR 1 (y 0..8)
+      { x: 0, z: 2,  w: 6, d: 6, y: 8 },                                          // mid pad (high)
+      { x: 0, z: -8, w: 5, d: 5, y: 8, move: { axis: 'y', amp: 4, period: 3, phase: 1.5 } }, // ELEVATOR 2 (y 4..12)
+      { x: 0, z: -18,w: 6, d: 6, y: 12 },                                         // high landing
+      { x: 0, z: -28,w: 7, d: 7, y: 12 },                                         // goal
+    ],
+  },
+  { // 14 - slider highway: time hops across three fast sliders
+    start: { x: 0, z: 26 }, goalIdx: 5,
+    platforms: [
+      { x: 0, z: 26,  w: 7, d: 6, y: 5 },                                                   // start
+      { x: 0, z: 16,  w: 5, d: 5, y: 5, move: { axis: 'x', amp: 9,  period: 3 } },          // slider
+      { x: 0, z: 6,   w: 5, d: 5, y: 5, move: { axis: 'x', amp: 9,  period: 2.6, phase: 1 } },// faster
+      { x: 0, z: -4,  w: 6, d: 5, y: 5 },                                                   // safe pad
+      { x: 0, z: -14, w: 5, d: 5, y: 5, move: { axis: 'x', amp: 10, period: 2.4, phase: 2 } },// fastest
+      { x: 0, z: -25, w: 7, d: 7, y: 5 },                                                   // goal
+    ],
+  },
+  { // 15 - vertical climb (ramp + elevator), then a steep plunge to the goal
+    start: { x: 0, z: 24 }, goalIdx: 5,
+    platforms: [
+      { x: 0, z: 24, w: 7, d: 7,  y: 0 },                                         // start
+      { x: 0, z: 12, w: 6, d: 16, y: 3, sz: -0.375 },                             // up ramp (0 -> 6)
+      { x: 0, z: -2, w: 5, d: 5,  y: 9, move: { axis: 'y', amp: 5, period: 4 } }, // ELEVATOR (y 4..14)
+      { x: 0, z: -12,w: 6, d: 6,  y: 14 },                                        // high pad
+      { x: 0, z: -23,w: 6, d: 16, y: 8, sz: 0.75 },                               // STEEP plunge ramp (14 -> 2)
+      { x: 0, z: -35,w: 7, d: 7,  y: 2 },                                         // goal
+    ],
+  },
+  { // 16 - FINAL BOSS: banked bumps -> slider -> elevator -> long jumps to the peak
+    start: { x: 0, z: 30 }, goalIdx: 6,
+    platforms: [
+      { x: 0, z: 30, w: 5,   d: 6,  y: 12 },                                      // start
+      { x: 0, z: 19, w: 3.5, d: 16, y: 8, sz: 0.5, sx: 0.28,                      // banked bumps (12 -> 4)
+        bumps: [ { x: 0, z: 22, amp: 1, sig: 1.5 }, { x: 0, z: 15, amp: 1, sig: 1.5 } ] },
+      { x: 0, z: 5,  w: 4,   d: 5,  y: 4 },                                       // tiny pad -> gap
+      { x: 0, z: -6, w: 4.5, d: 5,  y: 4, move: { axis: 'x', amp: 9, period: 2.6, phase: 1 } }, // SLIDER
+      { x: 0, z: -16,w: 4.5, d: 5,  y: 7, move: { axis: 'y', amp: 5, period: 3 } },             // ELEVATOR (y 2..12)
+      { x: 0, z: -22,w: 5,   d: 5,  y: 12 },                                      // high pad (reach at top)
+      { x: 0, z: -30,w: 6,   d: 6,  y: 12 },                                      // goal peak
+    ],
+  },
 ];
 
 const platMat  = new THREE.MeshStandardMaterial({ color: 0x36406e, roughness: 0.92 });
