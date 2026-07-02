@@ -50,7 +50,7 @@
 <body>
 <div id="hud">
   <div>Level <select id="levelpick"></select> &nbsp; Time <b id="time">0.0</b>s</div>
-  <div>Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b></div>
+  <div>Move <b>WASD / Arrows</b> &nbsp; Jump <b>SPACE</b> &nbsp; Restart <b>R</b> &nbsp; Level <b>[ ]</b> &nbsp; Mute <b>M</b></div>
 </div>
 <div id="scores">
   <h2>Best Times</h2>
@@ -136,6 +136,51 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
+// ---------- Procedural audio (Web Audio, no files) ----------
+const Sound = (() => {
+  let ctx, master, rollGain, rollFilter, muted = false;
+  function ensure() {
+    if (ctx) return;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    master = ctx.createGain(); master.gain.value = 0.55; master.connect(ctx.destination);
+    // rolling rumble: looping white noise -> lowpass -> gain (driven by speed)
+    const n = ctx.sampleRate * 2, buf = ctx.createBuffer(1, n, ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
+    rollFilter = ctx.createBiquadFilter(); rollFilter.type = 'lowpass'; rollFilter.frequency.value = 300;
+    rollGain = ctx.createGain(); rollGain.gain.value = 0;
+    src.connect(rollFilter); rollFilter.connect(rollGain); rollGain.connect(master); src.start();
+    // ambient space drone: two soft detuned sines
+    [55, 82.41].forEach(f => {
+      const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+      const g = ctx.createGain(); g.gain.value = 0.045; o.connect(g); g.connect(master); o.start();
+    });
+  }
+  function blip(freq, dur, type, vol, slideTo) {
+    if (!ctx || muted) return;
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    const g = ctx.createGain(); g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+  }
+  return {
+    resume() { ensure(); if (ctx.state === 'suspended') ctx.resume(); },
+    jump() { blip(300, 0.18, 'square', 0.22, 640); },
+    land() { blip(150, 0.13, 'sine', 0.3, 70); },
+    win() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => blip(f, 0.22, 'triangle', 0.28), i * 110)); },
+    fall() { blip(420, 1.3, 'sawtooth', 0.22, 55); },
+    roll(speed, grounded) {
+      if (!rollGain) return;
+      const target = (grounded && !muted) ? Math.min(0.22, speed * 0.014) : 0;
+      rollGain.gain.setTargetAtTime(target, ctx.currentTime, 0.08);
+      rollFilter.frequency.setTargetAtTime(250 + speed * 45, ctx.currentTime, 0.1);
+    },
+    toggleMute() { muted = !muted; if (master) master.gain.setTargetAtTime(muted ? 0 : 0.55, ctx.currentTime, 0.05); return muted; },
+  };
+})();
+
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -152,6 +197,35 @@ sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
 sun.shadow.camera.top = 50; sun.shadow.camera.bottom = -50;
 sun.shadow.camera.far = 100;
 scene.add(sun);
+
+// visible sun: crisp core + soft radial glow sprite, far off in the light's direction
+{
+  const dir = sun.position.clone().normalize();
+  const sunPos = dir.multiplyScalar(650);
+  // soft glow via a radial-gradient sprite (always camera-facing, additive)
+  const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+  const g2 = cv.getContext('2d');
+  const grd = g2.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grd.addColorStop(0.0, 'rgba(255,246,220,1)');
+  grd.addColorStop(0.22, 'rgba(255,226,150,0.65)');
+  grd.addColorStop(0.55, 'rgba(255,200,110,0.18)');
+  grd.addColorStop(1.0, 'rgba(255,190,90,0)');
+  g2.fillStyle = grd; g2.fillRect(0, 0, 128, 128);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(cv), transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+  }));
+  glow.scale.set(260, 260, 1);
+  glow.position.copy(sunPos);
+  scene.add(glow);
+  // bright crisp core
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(22, 32, 32),
+    new THREE.MeshBasicMaterial({ color: 0xfff6da, fog: false })
+  );
+  core.position.copy(sunPos);
+  scene.add(core);
+}
 
 // ---------- Ball ----------
 const BALL_R = 0.6;
@@ -170,63 +244,97 @@ scene.add(ball);
 //   flat platform omits sx/sz. Ramps connect flush when edge heights match.
 const PLAT_H = 0.8;
 const LEVELS = [
-  { // 1 - long gentle descent, teaches rolling + slope (wide, forgiving)
-    start: { x: 0, z: 28 }, goalIdx: 4,
+  { // 1 - TUTORIAL: straight. just roll forward to the pad.
+    start: { x: 0, z: 24 }, goalIdx: 2,
     platforms: [
-      { x: 0, z: 28,  w: 9, d: 8,  y: 6 },                 // start   z 24..32
-      { x: 0, z: 16,  w: 8, d: 16, y: 4, sz: 0.25 },       // gentle down (6 -> 2)
-      { x: 0, z: 2,   w: 9, d: 8,  y: 2 },                 // flat rest
-      { x: 0, z: -10, w: 8, d: 16, y: 0.5, sz: 0.1875 },   // gentle down (2 -> -1)
-      { x: 0, z: -24, w: 10,d: 9,  y: -1 },                // goal (wide)
+      { x: 0, z: 24, w: 9, d: 10, y: 0 },   // start   z 19..29
+      { x: 0, z: 3,  w: 8, d: 32, y: 0 },   // long straight   z -13..19
+      { x: 0, z: -18,w: 9, d: 10, y: 0 },   // goal    z -23..-13
     ],
   },
-  { // 2 - longer descent + jump gap + 90-degree dog-leg turn
-    start: { x: 0, z: 28 }, goalIdx: 5,
+  { // 2 - TUTORIAL: straight, then turn left and right (steering)
+    start: { x: 0, z: 22 }, goalIdx: 5,
     platforms: [
-      { x: 0,  z: 28, w: 7,  d: 8,  y: 6 },                // start
-      { x: 0,  z: 16, w: 6,  d: 16, y: 3, sz: 0.375 },     // down (6 -> 0)
-      { x: 0,  z: 2,  w: 7,  d: 8,  y: 0 },                // flat -> GAP
-      { x: 0,  z: -12,w: 6,  d: 6,  y: 0 },                // landing (gap 7)
-      { x: 10, z: -12,w: 16, d: 5,  y: 0 },                // long lateral turn +x
-      { x: 20, z: -12,w: 7,  d: 7,  y: 0 },                // goal
+      { x: 0,   z: 22, w: 7,  d: 8,  y: 0 },   // start
+      { x: 0,   z: 10, w: 6,  d: 16, y: 0 },   // straight forward   z 2..18
+      { x: -9,  z: 2,  w: 18, d: 6,  y: 0 },   // turn LEFT (-x)     x -18..0
+      { x: -18, z: -8, w: 6,  d: 16, y: 0 },   // forward down       z -16..0
+      { x: -9,  z: -14,w: 18, d: 6,  y: 0 },   // turn RIGHT (+x)    x -18..0
+      { x: 0,   z: -20,w: 7,  d: 8,  y: 0 },   // goal
     ],
   },
-  { // 3 - banked drop + long lateral sweep + climb to high goal
-    start: { x: 0, z: 28 }, goalIdx: 5,
+  { // 3 - TUTORIAL: ramps. down, up, and down again.
+    start: { x: 0, z: 26 }, goalIdx: 6,
     platforms: [
-      { x: 0,  z: 28, w: 7, d: 7,  y: 9 },                        // start
-      { x: 0,  z: 16, w: 5, d: 16, y: 5, sz: 0.5, sx: 0.16 },     // banked down (9 -> 1), drift
-      { x: 0,  z: 2,  w: 7, d: 8,  y: 1 },                        // flat
-      { x: 12, z: 2,  w: 22,d: 5,  y: 1 },                        // LONG lateral sweep +x
-      { x: 22, z: -8, w: 5, d: 16, y: 4, sz: -0.375 },            // climb -z (1 -> 7)
-      { x: 22, z: -20,w: 7, d: 7,  y: 7 },                        // goal high
+      { x: 0, z: 26, w: 8, d: 8,  y: 6 },                 // start high   z 22..30
+      { x: 0, z: 14, w: 7, d: 16, y: 3, sz: 0.375 },      // down ramp (6 -> 0)   z 6..22
+      { x: 0, z: 2,  w: 8, d: 8,  y: 0 },                 // valley       z -2..6
+      { x: 0, z: -10,w: 7, d: 16, y: 3, sz: -0.375 },     // up ramp (0 -> 6)     z -18..-2
+      { x: 0, z: -22,w: 8, d: 8,  y: 6 },                 // crest        z -26..-18
+      { x: 0, z: -34,w: 7, d: 16, y: 3, sz: 0.375 },      // down ramp (6 -> 0)   z -42..-26
+      { x: 0, z: -46,w: 8, d: 8,  y: 0 },                 // goal low     z -50..-42
     ],
   },
-  { // 4 - long double dog-leg zigzag with rolling mounds
-    start: { x: -16, z: 24 }, goalIdx: 6,
+  { // 4 - TUTORIAL: hills. weave over varied mounds (keep your speed).
+    start: { x: 0, z: 22 }, goalIdx: 2,
     platforms: [
-      { x: -16, z: 24, w: 7,  d: 7,  y: 6 },               // start
-      { x: -16, z: 12, w: 5,  d: 16, y: 3, sz: 0.375 },    // down (6 -> 0)
-      { x: -16, z: -2, w: 6,  d: 8,  y: 0 },               // corner 1
-      { x: -2,  z: -2, w: 24, d: 5,  y: 0,                 // long lateral run +x w/ mounds
-        bumps: [ { x: -8, z: -2, amp: 1.2, sig: 1.6 }, { x: 2, z: -2, amp: 1.2, sig: 1.6 } ] },
-      { x: 10,  z: -2, w: 6,  d: 6,  y: 0 },               // corner 2
-      { x: 10,  z: -14,w: 5,  d: 16, y: -1.5, sz: 0.1875 },// down run -z (0 -> -3)
-      { x: 10,  z: -26,w: 7,  d: 7,  y: -3 },              // goal
+      { x: 0, z: 22, w: 10, d: 8,  y: 0 },                // start   z 18..26
+      { x: 0, z: -2, w: 10, d: 40, y: 0,                  // wide path, varied hills   z -22..18
+        bumps: [
+          { x: -3, z: 10, amp: 2.6, sig: 2.2 },           // tall, narrow (left)
+          { x:  3, z: 3,  amp: 1.4, sig: 3.6 },           // low, broad (right)
+          { x: -1, z: -6, amp: 3.4, sig: 2.0 },           // tallest peak
+          { x:  3, z: -13,amp: 1.1, sig: 1.8 },           // small bump (right)
+          { x: -3, z: -17,amp: 1.8, sig: 2.6 },           // medium (left)
+        ] },
+      { x: 0, z: -26,w: 10, d: 8,  y: 0 },                // goal   z -30..-22
     ],
   },
-  { // 5 - banked drop -> ELEVATOR up -> high goal (first mover)
-    start: { x: 0, z: 26 }, goalIdx: 5,
+  { // 5 - TUTORIAL: a moving platform. hop on, ride, hop off.
+    start: { x: 0, z: 22 }, goalIdx: 3,
     platforms: [
-      { x: 0, z: 26, w: 7, d: 7,  y: 10 },                                       // start
-      { x: 0, z: 14, w: 5, d: 16, y: 6, sz: 0.5, sx: 0.2 },                      // banked down (10 -> 2)
-      { x: 0, z: 0,  w: 7, d: 8,  y: 2 },                                        // pad -> gap
-      { x: 0, z: -10,w: 6, d: 6,  y: 2, move: { axis: 'y', amp: 4, period: 4 } },// ELEVATOR (y -2..6)
-      { x: 0, z: -18,w: 7, d: 7,  y: 6 },                                        // high landing (roll off at top)
-      { x: 0, z: -28,w: 7, d: 7,  y: 6 },                                        // goal
+      { x: 0, z: 22, w: 7, d: 8, y: 2 },                                         // start
+      { x: 0, z: 10, w: 6, d: 6, y: 2, move: { axis: 'x', amp: 7, period: 4 } }, // SLIDER (gap 5)
+      { x: 0, z: -2, w: 7, d: 8, y: 2 },                                         // pad (gap 5)
+      { x: 0, z: -16,w: 8, d: 8, y: 2 },                                         // goal (gap 6)
     ],
   },
-  { // 6 - long jump gauntlet + a sliding platform mid-run
+  { // 6 - long rollercoaster: climb -> crest -> drop -> big lateral sweep -> climb to goal
+    start: { x: -24, z: 26 }, goalIdx: 6,
+    platforms: [
+      { x: -24, z: 26, w: 8,  d: 8,  y: 2 },               // start
+      { x: -24, z: 14, w: 6,  d: 18, y: 5, sz: -0.333 },   // up   (2 -> 8)
+      { x: -24, z: 0,  w: 8,  d: 8,  y: 8 },               // crest
+      { x: -24, z: -12,w: 6,  d: 18, y: 5, sz: 0.333 },    // down (8 -> 2)
+      { x: -10, z: -24,w: 34, d: 6,  y: 2 },               // LONG lateral sweep +x
+      { x: 7,   z: -14,w: 6,  d: 16, y: 5, sz: 0.375 },    // climb +z (2 -> 8)
+      { x: 7,   z: 2,  w: 8,  d: 8,  y: 8 },               // goal high
+    ],
+  },
+  { // 7 - ride the ELEVATOR up to reach the high goal
+    start: { x: 0, z: 24 }, goalIdx: 5,
+    platforms: [
+      { x: 0, z: 24, w: 7, d: 8,  y: 0 },                                        // start
+      { x: 0, z: 13, w: 6, d: 12, y: 2, sz: -0.333 },                            // small climb (0 -> 4)
+      { x: 0, z: 2,  w: 6, d: 8,  y: 4 },                                        // pad -> gap
+      { x: 0, z: -8, w: 6, d: 6,  y: 4, move: { axis: 'y', amp: 4, period: 4 } },// ELEVATOR (y 0..8)
+      { x: 0, z: -16,w: 7, d: 8,  y: 8 },                                        // high landing (roll off at top)
+      { x: 0, z: -28,w: 7, d: 7,  y: 8 },                                        // goal
+    ],
+  },
+  { // 8 - narrow banked drift + gaps + SLIDER + dog-leg turn (combo)
+    start: { x: 0, z: 26 }, goalIdx: 6,
+    platforms: [
+      { x: 0,  z: 26, w: 6,   d: 6,  y: 8 },                                     // start
+      { x: 0,  z: 14, w: 4,   d: 16, y: 4.5, sz: 0.4375, sx: 0.2 },              // narrow banked down (8 -> 1)
+      { x: 0,  z: 0,  w: 5,   d: 6,  y: 1 },                                     // pad -> gap
+      { x: 0,  z: -11,w: 4.5, d: 5,  y: 1, move: { axis: 'x', amp: 8, period: 3.2 } }, // SLIDER
+      { x: 0,  z: -20,w: 6,   d: 5,  y: 1 },                                     // landing
+      { x: 9,  z: -20,w: 14,  d: 5,  y: 1 },                                     // lateral turn +x
+      { x: 18, z: -20,w: 6,   d: 6,  y: 1 },                                     // goal
+    ],
+  },
+  { // 9 - long jump gauntlet + a sliding platform mid-run
     start: { x: 0, z: 26 }, goalIdx: 6,
     platforms: [
       { x: 0, z: 26,  w: 7, d: 6, y: 4 },                                        // start
@@ -239,19 +347,18 @@ const LEVELS = [
       { x: 0, z: -34, w: 7, d: 7, y: 4 },                                        // goal
     ],
   },
-  { // 7 - narrow banked drift + gaps + SLIDER + dog-leg turn (combo)
-    start: { x: 0, z: 26 }, goalIdx: 6,
+  { // 10 - MOVING platforms: time jumps across sliders + a rising platform
+    start: { x: 0, z: 22 }, goalIdx: 5,
     platforms: [
-      { x: 0,  z: 26, w: 6,   d: 6,  y: 8 },                                     // start
-      { x: 0,  z: 14, w: 4,   d: 16, y: 4.5, sz: 0.4375, sx: 0.2 },              // narrow banked down (8 -> 1)
-      { x: 0,  z: 0,  w: 5,   d: 6,  y: 1 },                                     // pad -> gap
-      { x: 0,  z: -11,w: 4.5, d: 5,  y: 1, move: { axis: 'x', amp: 8, period: 3.2 } }, // SLIDER
-      { x: 0,  z: -20,w: 6,   d: 5,  y: 1 },                                     // landing
-      { x: 9,  z: -20,w: 14,  d: 5,  y: 1 },                                     // lateral turn +x
-      { x: 18, z: -20,w: 6,   d: 6,  y: 1 },                                     // goal
+      { x: 0, z: 22, w: 6, d: 6, y: 6 },                                                    // start
+      { x: 0, z: 11, w: 5, d: 5, y: 6, move: { axis: 'x', amp: 8, period: 4 } },            // slider L<->R
+      { x: 0, z: 1,  w: 7, d: 6, y: 6 },                                                    // mid pad
+      { x: 0, z: -9, w: 5, d: 5, y: 6, move: { axis: 'x', amp: 9, period: 3, phase: 1.5 } },// faster slider
+      { x: 0, z: -18,w: 5, d: 5, y: 3, move: { axis: 'y', amp: 3, period: 3 } },            // elevator (y 0..6)
+      { x: 0, z: -28,w: 7, d: 7, y: 0 },                                                    // goal
     ],
   },
-  { // 8 - FINAL: steep banked bumps -> SLIDER -> ELEVATOR -> multi-jump climb to peak
+  { // 11 - FINAL: steep banked bumps -> SLIDER -> ELEVATOR -> multi-jump climb to peak
     start: { x: 0, z: 30 }, goalIdx: 6,
     platforms: [
       { x: 0, z: 30, w: 5,   d: 6,  y: 14 },                                     // start
@@ -264,45 +371,35 @@ const LEVELS = [
       { x: 0, z: -32,w: 6,   d: 6,  y: 12 },                                     // goal peak
     ],
   },
-  { // 9 - long rollercoaster: climb -> crest -> drop -> big lateral sweep -> climb to goal
-    start: { x: -24, z: 26 }, goalIdx: 6,
-    platforms: [
-      { x: -24, z: 26, w: 8,  d: 8,  y: 2 },               // start
-      { x: -24, z: 14, w: 6,  d: 18, y: 5, sz: -0.333 },   // up   (2 -> 8)
-      { x: -24, z: 0,  w: 8,  d: 8,  y: 8 },               // crest
-      { x: -24, z: -12,w: 6,  d: 18, y: 5, sz: 0.333 },    // down (8 -> 2)
-      { x: -10, z: -24,w: 34, d: 6,  y: 2 },               // LONG lateral sweep +x
-      { x: 7,   z: -14,w: 6,  d: 16, y: 5, sz: 0.375 },    // climb +z (2 -> 8)
-      { x: 7,   z: 2,  w: 8,  d: 8,  y: 8 },               // goal high
-    ],
-  },
-  { // 10 - ride the ELEVATOR up to reach the high goal
-    start: { x: 0, z: 24 }, goalIdx: 5,
-    platforms: [
-      { x: 0, z: 24, w: 7, d: 8,  y: 0 },                                        // start
-      { x: 0, z: 13, w: 6, d: 12, y: 2, sz: -0.333 },                            // small climb (0 -> 4)
-      { x: 0, z: 2,  w: 6, d: 8,  y: 4 },                                        // pad -> gap
-      { x: 0, z: -8, w: 6, d: 6,  y: 4, move: { axis: 'y', amp: 4, period: 4 } },// ELEVATOR (y 0..8)
-      { x: 0, z: -16,w: 7, d: 8,  y: 8 },                                        // high landing (roll off at top)
-      { x: 0, z: -28,w: 7, d: 7,  y: 8 },                                        // goal
-    ],
-  },
-  { // 11 - MOVING platforms: time jumps across sliders + a rising platform
-    start: { x: 0, z: 22 }, goalIdx: 5,
-    platforms: [
-      { x: 0, z: 22, w: 6, d: 6, y: 6 },                                                    // start
-      { x: 0, z: 11, w: 5, d: 5, y: 6, move: { axis: 'x', amp: 8, period: 4 } },            // slider L<->R
-      { x: 0, z: 1,  w: 7, d: 6, y: 6 },                                                    // mid pad
-      { x: 0, z: -9, w: 5, d: 5, y: 6, move: { axis: 'x', amp: 9, period: 3, phase: 1.5 } },// faster slider
-      { x: 0, z: -18,w: 5, d: 5, y: 3, move: { axis: 'y', amp: 3, period: 3 } },            // elevator (y 0..6)
-      { x: 0, z: -28,w: 7, d: 7, y: 0 },                                                    // goal
-    ],
-  },
 ];
 
 const platMat  = new THREE.MeshStandardMaterial({ color: 0x36406e, roughness: 0.92 });
 const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0.9 });
-const hillMat   = new THREE.MeshStandardMaterial({ color: 0x3f7d55, roughness: 0.95, side: THREE.DoubleSide });
+// hill material: colors by height ABOVE THE PLATFORM BASE (attribute aH) so hills
+// look the same at any elevation; plus simple sun shading
+const hillMat = new THREE.ShaderMaterial({
+  uniforms: { uSun: { value: new THREE.Vector3(16, 30, 12).normalize() } },
+  side: THREE.DoubleSide,
+  vertexShader: /* glsl */`
+    attribute float aH;
+    varying float vH;
+    varying vec3 vNormalW;
+    void main() {
+      vH = aH;
+      vNormalW = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vH;
+    varying vec3 vNormalW;
+    uniform vec3 uSun;
+    void main() {
+      float t = clamp(vH / 3.0, 0.0, 1.0);
+      vec3 col = mix(vec3(0.16, 0.40, 0.30), mix(vec3(0.35, 0.62, 0.34), vec3(0.72, 0.66, 0.40), t), t);
+      float diff = clamp(dot(normalize(vNormalW), normalize(uSun)), 0.0, 1.0);
+      gl_FragColor = vec4(col * (0.45 + 0.6 * diff), 1.0);
+    }`,
+});
 const moverMat  = new THREE.MeshStandardMaterial({ color: 0xe08a3c, emissive: 0x572c0c, emissiveIntensity: 0.4, roughness: 0.7 });
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -347,10 +444,13 @@ function buildLevel(idx) {
     // orient so top face normal = (-sx, 1, -sz)
     const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
     mesh.quaternion.setFromUnitVectors(UP, normal);
-    // center of the tilted slab: drop half-thickness along its own normal
+    // center of the tilted slab: drop half-thickness along its own normal.
+    // on bumped platforms, sink the slab extra so the green hill mesh (drawn at
+    // the true surface height) never sits coplanar with the slab top (z-fighting)
+    const sink = p.bumps ? 0.4 : 0;
     mesh.position.set(
       p.x - normal.x * PLAT_H / 2,
-      p.y - normal.y * PLAT_H / 2,
+      p.y - normal.y * PLAT_H / 2 - sink,
       p.z - normal.z * PLAT_H / 2
     );
     mesh.castShadow = true;
@@ -376,16 +476,20 @@ function buildLevel(idx) {
 
     // hills on the platform: displaced top surface matching the physics field
     if (p.bumps) {
-      const segW = Math.max(2, Math.ceil(p.w * 2));
-      const segD = Math.max(2, Math.ceil(p.d * 2));
+      const segW = Math.max(2, Math.ceil(p.w * 3));
+      const segD = Math.max(2, Math.ceil(p.d * 3));
       const hg = new THREE.PlaneGeometry(p.w, p.d, segW, segD);
       hg.rotateX(-Math.PI / 2);
       const pos = hg.attributes.position;
+      const aH = new Float32Array(pos.count);
       for (let v = 0; v < pos.count; v++) {
         const wx = p.x + pos.getX(v), wz = p.z + pos.getZ(v);
-        pos.setY(v, surfHeight(phys, wx, wz));
+        const sh = surfHeight(phys, wx, wz);
+        pos.setY(v, sh);
+        aH[v] = sh - p.y;                // height above the platform base
       }
       pos.needsUpdate = true;
+      hg.setAttribute('aH', new THREE.BufferAttribute(aH, 1));
       hg.computeVertexNormals();
       const hillMesh = new THREE.Mesh(hg, hillMat);
       hillMesh.position.set(p.x, 0, p.z);
@@ -459,7 +563,7 @@ function steer(dx, dz, accel, grip, dt) {
 
 let level = 0, elapsed = 0;
 let state = 'menu'; // menu | play | win | fall
-let grounded = false, wasGrounded = false;
+let grounded = false, wasGrounded = false, sndGrounded = false;
 let hoverT = 0; // free-running clock for the edge-of-galaxy drift
 const carry = new THREE.Vector3(); // velocity of the platform currently underfoot
 
@@ -467,12 +571,16 @@ const carry = new THREE.Vector3(); // velocity of the platform currently underfo
 const keys = {};
 addEventListener('keydown', e => {
   keys[e.code] = true;
+  Sound.resume();
   if (e.code === 'Space') {
     if (state === 'menu') startLevel(level);
     else if (state === 'win') startLevel(nextLevel());
-    else if (state === 'play' && grounded) { vel.y = JUMP_V; grounded = false; }
+    else if (state === 'play' && grounded) { vel.y = JUMP_V; grounded = false; Sound.jump(); }
   }
+  if (e.code === 'KeyM') Sound.toggleMute();
   if (e.code === 'KeyR') startLevel(level);
+  if (e.code === 'BracketRight') startLevel(Math.min(LEVELS.length - 1, level + 1)); // next level
+  if (e.code === 'BracketLeft') startLevel(Math.max(0, level - 1));                  // prev level
   if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
@@ -655,9 +763,47 @@ function update(dt) {
   if (wasGrounded && !grounded) { vel.x += carry.x; vel.y += carry.y; vel.z += carry.z; }
   wasGrounded = grounded;
 
+  const prevBottom = ballPos.y - BALL_R;
+  const prevX0 = ballPos.x, prevZ0 = ballPos.z;
   ballPos.x += vel.x * dt;
   ballPos.y += vel.y * dt;
   ballPos.z += vel.z * dt;
+
+  if (!grounded) {
+    // 1) landing: the ball's bottom dropped onto a platform top this frame
+    //    (fast fall or arriving above the edge with enough arc) -> land on top
+    if (vel.y <= 0.01) {
+      let bestSurf = -Infinity, hitPf = null;
+      for (const pf of platforms) {
+        if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
+        const surf = surfHeight(pf, ballPos.x, ballPos.z);
+        if (prevBottom >= surf - 0.05 && ballPos.y - BALL_R < surf && surf > bestSurf) { bestSurf = surf; hitPf = pf; }
+      }
+      if (hitPf) {
+        ballPos.y = bestSurf + BALL_R;
+        vel.y = 0; grounded = true; wasGrounded = true;
+        if (hitPf.vel) carry.set(hitPf.vel.x, hitPf.vel.y, hitPf.vel.z); else carry.set(0, 0, 0);
+      }
+    }
+    // 2) side wall: ball entered a platform's footprint from the side while below
+    //    its top (didn't clear the edge) -> block like a wall, ball drops down it
+    if (!grounded) {
+      for (const pf of platforms) {
+        if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
+        const surf = surfHeight(pf, ballPos.x, ballPos.z);
+        if (ballPos.y - BALL_R >= surf - 0.02) continue;          // above the top: no wall
+        const wasOutX = prevX0 < pf.minX || prevX0 > pf.maxX;
+        const wasOutZ = prevZ0 < pf.minZ || prevZ0 > pf.maxZ;
+        if (wasOutX) { ballPos.x = (prevX0 < pf.minX) ? pf.minX - 0.01 : pf.maxX + 0.01; if ((prevX0 < pf.minX) === (vel.x > 0)) vel.x = 0; }
+        if (wasOutZ) { ballPos.z = (prevZ0 < pf.minZ) ? pf.minZ - 0.01 : pf.maxZ + 0.01; if ((prevZ0 < pf.minZ) === (vel.z > 0)) vel.z = 0; }
+      }
+    }
+  }
+
+  // sound: land thud on touchdown, rolling rumble scaled by ground speed
+  if (grounded && !sndGrounded) Sound.land();
+  sndGrounded = grounded;
+  Sound.roll(Math.hypot(vel.x, vel.z), grounded);
 
   ball.rotation.z -= vel.x * dt / BALL_R;
   ball.rotation.x += vel.z * dt / BALL_R;
@@ -665,11 +811,12 @@ function update(dt) {
   ball.position.copy(ballPos);
 
   // begin the plunge once clearly off the course -> fall with the ball
-  if (state === 'play' && !grounded && ballPos.y < -7) state = 'falling';
+  if (state === 'play' && !grounded && ballPos.y < -7) { state = 'falling'; Sound.fall(); }
   if (state !== 'play') return; // no goal check while falling / drifting
   const dx = ballPos.x - goalPos.x, dz = ballPos.z - goalPos.z;
   if (dx * dx + dz * dz < 1.8 * 1.8 && ballPos.y <= goalPos.y + BALL_R + 0.6) {
     state = 'win';
+    Sound.win();
     const last = level === LEVELS.length - 1;
     const { improved, prev } = recordTime(level, elapsed);
     const bestLine = improved
