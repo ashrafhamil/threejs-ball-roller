@@ -1097,7 +1097,10 @@ function update(dt) {
         if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
         const surf = surfHeight(pf, ballPos.x, ballPos.z);
         if (ballPos.y - BALL_R >= surf - 0.02) continue;          // above the top: no wall
-        if (ballPos.y + BALL_R <= surf - PLAT_H) continue;        // entirely below the slab: pass under (e.g. a raised elevator)
+        // slab bottom measured from the BASE (not the bumpy surface) so the ball
+        // can't slip under a hill; still lets it pass under a raised elevator
+        const slabBottom = pf.y - PLAT_H - (pf.bumps ? 0.4 : 0);
+        if (ballPos.y + BALL_R <= slabBottom) continue;           // entirely below the slab: pass under
         const wasOutX = prevX0 < pf.minX || prevX0 > pf.maxX;
         const wasOutZ = prevZ0 < pf.minZ || prevZ0 > pf.maxZ;
         if (wasOutX) { ballPos.x = (prevX0 < pf.minX) ? pf.minX - 0.01 : pf.maxX + 0.01; if ((prevX0 < pf.minX) === (vel.x > 0)) vel.x = 0; }
