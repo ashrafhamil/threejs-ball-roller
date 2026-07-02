@@ -708,8 +708,6 @@ const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0
 // look the same at any elevation; plus simple sun shading
 const hillMat = new THREE.ShaderMaterial({
   uniforms: { uSun: { value: new THREE.Vector3(16, 30, 12).normalize() } },
-  side: THREE.DoubleSide,
-  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,  // sit flush on the slab top, no z-fight
   vertexShader: /* glsl */`
     attribute float aH;
     varying float vH;
@@ -724,9 +722,13 @@ const hillMat = new THREE.ShaderMaterial({
     varying vec3 vNormalW;
     uniform vec3 uSun;
     void main() {
-      float t = clamp(vH / 3.0, 0.0, 1.0);
-      vec3 col = mix(vec3(0.24, 0.50, 0.33), mix(vec3(0.40, 0.66, 0.36), vec3(0.74, 0.68, 0.42), t), t);
       float diff = clamp(dot(normalize(vNormalW), normalize(uSun)), 0.0, 1.0);
+      vec3 col;
+      if (vH < -0.05) col = vec3(0.21, 0.25, 0.43);        // sides/bottom: slab-blue block
+      else {
+        float t = clamp(vH / 3.0, 0.0, 1.0);               // top: grass -> tan by height
+        col = mix(vec3(0.24, 0.50, 0.33), mix(vec3(0.40, 0.66, 0.36), vec3(0.74, 0.68, 0.42), t), t);
+      }
       gl_FragColor = vec4(col * (0.45 + 0.6 * diff), 1.0);
     }`,
 });
@@ -762,34 +764,79 @@ function clearLevel() {
   if (goalMesh) { scene.remove(goalMesh); goalMesh = null; }
 }
 
+// build a SOLID hill: a closed block whose top follows the bumpy surface (not a
+// floating sheet) so mounds read as solid terrain. Local coords; mesh sits at (p.x,0,p.z).
+function buildSolidHill(p, phys) {
+  const segW = Math.max(2, Math.ceil(p.w * 3)), segD = Math.max(2, Math.ceil(p.d * 3));
+  const nx = segW + 1, nz = segD + 1, top = nx * nz;
+  const yB = p.y - PLAT_H;
+  const pos = [], aH = [], idx = [];
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {          // top surface
+    const lx = -p.w / 2 + p.w * i / segW, lz = -p.d / 2 + p.d * j / segD;
+    const sh = surfHeight(phys, p.x + lx, p.z + lz);
+    pos.push(lx, sh, lz); aH.push(sh - p.y);
+  }
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {          // flat bottom
+    const lx = -p.w / 2 + p.w * i / segW, lz = -p.d / 2 + p.d * j / segD;
+    pos.push(lx, yB, lz); aH.push(-PLAT_H - 1);                        // negative -> side color
+  }
+  const T = (i, j) => j * nx + i, B = (i, j) => top + j * nx + i;
+  for (let j = 0; j < segD; j++) for (let i = 0; i < segW; i++) {      // top faces
+    const a = T(i, j), b = T(i + 1, j), c = T(i, j + 1), d = T(i + 1, j + 1);
+    idx.push(a, c, b, b, c, d);
+  }
+  for (let j = 0; j < segD; j++) for (let i = 0; i < segW; i++) {      // bottom faces
+    const a = B(i, j), b = B(i + 1, j), c = B(i, j + 1), d = B(i + 1, j + 1);
+    idx.push(a, b, c, b, d, c);
+  }
+  for (let i = 0; i < segW; i++) {                                     // skirts (perimeter)
+    idx.push(T(i, 0), B(i, 0), T(i + 1, 0), T(i + 1, 0), B(i, 0), B(i + 1, 0));
+    idx.push(T(i + 1, segD), B(i, segD), T(i, segD), B(i + 1, segD), B(i, segD), T(i + 1, segD));
+  }
+  for (let j = 0; j < segD; j++) {
+    idx.push(T(0, j + 1), B(0, j), T(0, j), B(0, j + 1), B(0, j), T(0, j + 1));
+    idx.push(T(segW, j), B(segW, j), T(segW, j + 1), T(segW, j + 1), B(segW, j), B(segW, j + 1));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aH', new THREE.Float32BufferAttribute(aH, 1));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 function buildLevel(idx) {
   clearLevel();
   const lvl = LEVELS[idx];
   lvl.platforms.forEach((p, i) => {
     const sx = p.sx || 0, sz = p.sz || 0;
     const isRamp = sx !== 0 || sz !== 0;
-    const geo = new THREE.BoxGeometry(p.w, PLAT_H, p.d);
-    const mat = p.move ? moverMat : (isRamp ? rampMat : platMat);
-    const mesh = new THREE.Mesh(geo, mat);
-    // orient so top face normal = (-sx, 1, -sz)
-    const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
-    mesh.quaternion.setFromUnitVectors(UP, normal);
-    // center of the tilted slab: drop half-thickness along its own normal
-    mesh.position.set(
-      p.x - normal.x * PLAT_H / 2,
-      p.y - normal.y * PLAT_H / 2,
-      p.z - normal.z * PLAT_H / 2
-    );
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    platformMeshes.push(mesh);
-
     const phys = {
       minX: p.x - p.w / 2, maxX: p.x + p.w / 2,
       minZ: p.z - p.d / 2, maxZ: p.z + p.d / 2,
       cx: p.x, cz: p.z, y: p.y, sx, sz, bumps: p.bumps || null,
     };
+
+    let mesh;
+    if (p.bumps) {                                        // SOLID hill block (bumpy top)
+      mesh = new THREE.Mesh(buildSolidHill(p, phys), hillMat);
+      mesh.position.set(p.x, 0, p.z);
+    } else {                                              // flat / ramp / mover slab
+      const geo = new THREE.BoxGeometry(p.w, PLAT_H, p.d);
+      mesh = new THREE.Mesh(geo, p.move ? moverMat : (isRamp ? rampMat : platMat));
+      const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
+      mesh.quaternion.setFromUnitVectors(UP, normal);
+      mesh.position.set(
+        p.x - normal.x * PLAT_H / 2,
+        p.y - normal.y * PLAT_H / 2,
+        p.z - normal.z * PLAT_H / 2
+      );
+    }
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    platformMeshes.push(mesh);
+
     // moving / elevating platform: snapshot base + mesh origin, add per-frame velocity
     if (p.move) {
       phys.move = p.move;
@@ -800,31 +847,6 @@ function buildLevel(idx) {
       phys.vel = { x: 0, y: 0, z: 0 };
     }
     platforms.push(phys);
-
-    // hills on the platform: displaced top surface matching the physics field
-    if (p.bumps) {
-      const segW = Math.max(2, Math.ceil(p.w * 3));
-      const segD = Math.max(2, Math.ceil(p.d * 3));
-      const hg = new THREE.PlaneGeometry(p.w, p.d, segW, segD);
-      hg.rotateX(-Math.PI / 2);
-      const pos = hg.attributes.position;
-      const aH = new Float32Array(pos.count);
-      for (let v = 0; v < pos.count; v++) {
-        const wx = p.x + pos.getX(v), wz = p.z + pos.getZ(v);
-        const sh = surfHeight(phys, wx, wz);
-        pos.setY(v, sh);
-        aH[v] = sh - p.y;                // height above the platform base
-      }
-      pos.needsUpdate = true;
-      hg.setAttribute('aH', new THREE.BufferAttribute(aH, 1));
-      hg.computeVertexNormals();
-      const hillMesh = new THREE.Mesh(hg, hillMat);
-      hillMesh.position.set(p.x, 0, p.z);
-      hillMesh.castShadow = true;
-      hillMesh.receiveShadow = true;
-      scene.add(hillMesh);
-      platformMeshes.push(hillMesh);
-    }
 
     if (i === lvl.goalIdx) {
       goalPos.set(p.x, p.y, p.z);
@@ -947,14 +969,15 @@ function saveBest() {
 }
 const elScores = document.getElementById('scores-body');
 function renderScores() {
-  let html = '', total = 0, complete = true;
+  let html = '', total = 0, done = 0;
   for (let i = 0; i < LEVELS.length; i++) {
     const b = best[i];
-    if (b == null) complete = false; else total += b;
+    if (b != null) { total += b; done++; }
     const cls = 'srow' + (i === level ? ' cur' : '') + (b == null ? ' empty' : '');
     html += `<div class="${cls}"><span>Lvl ${i + 1}</span><span>${b == null ? '—' : b.toFixed(1) + 's'}</span></div>`;
   }
-  html += `<div class="srow total"><span>Total</span><span>${complete ? total.toFixed(1) + 's' : '—'}</span></div>`;
+  // Total = sum of the levels you've cleared, with a done/all count
+  html += `<div class="srow total"><span>Total (${done}/${LEVELS.length})</span><span>${done ? total.toFixed(1) + 's' : '—'}</span></div>`;
   elScores.innerHTML = html;
 }
 // record a finished level; returns {improved, prev}
