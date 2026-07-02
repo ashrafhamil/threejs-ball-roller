@@ -72,6 +72,7 @@
     background: rgba(20,24,44,.55); border: 1px solid rgba(120,140,220,.25);
     border-radius: 10px; padding: 10px 12px; min-width: 132px;
     text-shadow: 0 1px 2px rgba(0,0,0,.5); backdrop-filter: blur(3px);
+    max-height: 82vh; overflow-y: auto;
   }
   #scores h2 { font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
     color: #8ea0d8; margin-bottom: 6px; font-weight: 700; }
@@ -560,6 +561,66 @@ const LEVELS = [
     ],
   },
 ];
+
+// ---------- Procedural long levels (17+): chain obstacle modules with flush seams.
+// Seeded per index so every player gets the same layout (fair leaderboard). ----------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function genLevel(seed, d) {
+  const rng = mulberry32(seed);
+  const rnd = (a, b) => a + rng() * (b - a);
+  const ri = (a, b) => Math.floor(rnd(a, b + 1));
+  const W = Math.max(5, Math.round(7 - 2 * d));            // narrower as difficulty rises
+  const p = [], s = { cx: 0, cz: 26, cy: ri(0, 6) };
+  const flat = len => { p.push({ x: s.cx, z: s.cz - len / 2, w: W, d: len, y: s.cy }); s.cz -= len; };
+  const ramp = (len, dy) => { p.push({ x: s.cx, z: s.cz - len / 2, w: W, d: len, y: s.cy - dy / 2, sz: dy / len }); s.cz -= len; s.cy -= dy; };
+  const banked = (len, dy, bank) => {
+    const zc = s.cz - len / 2;
+    const b = rng() < 0.5 ? [{ x: s.cx, z: zc + len / 4, amp: 1, sig: 1.6 }, { x: s.cx, z: zc - len / 4, amp: 1, sig: 1.6 }] : undefined;
+    p.push({ x: s.cx, z: zc, w: Math.max(4, W - 2), d: len, y: s.cy - dy / 2, sz: dy / len, sx: bank, bumps: b });
+    s.cz -= len; s.cy -= dy;
+  };
+  const hills = len => {
+    const zc = s.cz - len / 2, n = ri(2, 3), b = [];
+    for (let k = 0; k < n; k++) b.push({ x: s.cx + rnd(-W / 3, W / 3), z: zc + len / 2 - (k + 0.7) * (len / (n + 1)), amp: rnd(1.4, 2.8), sig: rnd(1.8, 2.7) });
+    p.push({ x: s.cx, z: zc, w: W, d: len, y: s.cy, bumps: b }); s.cz -= len;
+  };
+  const turn = a => { const td = Math.round(W * 1.4); p.push({ x: s.cx + a / 2, z: s.cz - td / 2, w: Math.abs(a) + W, d: td, y: s.cy }); s.cx += a; s.cz -= td; };
+  const gapPad = (g, len) => { s.cz -= g; p.push({ x: s.cx, z: s.cz - len / 2, w: W, d: len, y: s.cy }); s.cz -= len; };
+  const slider = (g, amp, per) => { s.cz -= g; p.push({ x: s.cx, z: s.cz - 2.5, w: 5, d: 5, y: s.cy, move: { axis: 'x', amp, period: per } }); s.cz -= 5; };
+  const elevator = (g, amp, per) => { s.cz -= g; p.push({ x: s.cx, z: s.cz - 2.5, w: 5, d: 5, y: s.cy, move: { axis: 'y', amp, period: per } }); s.cz -= 5; };
+
+  const startLen = ri(8, 10); flat(startLen);
+  const start = { x: 0, z: 26 - startLen / 2 };
+  const N = Math.min(18, 8 + Math.floor(d * 14));         // longer as difficulty rises
+  for (let i = 0; i < N; i++) {
+    if (s.cy < -8) { ramp(ri(14, 18), -ri(4, 6)); continue; }   // keep height bounded
+    if (s.cy > 14) { ramp(ri(14, 18), ri(4, 6)); continue; }
+    const w = [['straight', 2], ['ramp', 3], ['turn', 2], ['hills', 1 + 2 * d],
+      ['banked', 1 + 3 * d], ['gapPad', 1 + 2 * d], ['slider', 3 * d], ['elevator', 2 * d]];
+    const tot = w.reduce((a, b) => a + b[1], 0);
+    let r = rng() * tot, kind = 'straight';
+    for (const [k, wt] of w) { r -= wt; if (r <= 0) { kind = k; break; } }
+    if (kind === 'straight') flat(ri(12, 18));
+    else if (kind === 'ramp') ramp(ri(14, 18), (rng() < 0.5 ? 1 : -1) * ri(4, 6));
+    else if (kind === 'turn') { let a = (rng() < 0.5 ? 1 : -1) * ri(8, 14); if (Math.abs(s.cx + a) > 26) a = -a; turn(a); }
+    else if (kind === 'hills') hills(ri(16, 22));
+    else if (kind === 'banked') banked(16, ri(4, 7), (rng() < 0.5 ? 1 : -1) * rnd(0.16, 0.26));
+    else if (kind === 'gapPad') gapPad(ri(4, 5), ri(6, 10));
+    else if (kind === 'slider') slider(4, ri(7, 10), rnd(2.4, 3.4));
+    else elevator(4, ri(3, 5), rnd(3, 4));
+  }
+  flat(6);
+  p.push({ x: s.cx, z: s.cz - 4, w: W + 1, d: 8, y: s.cy });  // goal pad
+  return { start, goalIdx: p.length - 1, platforms: p };
+}
+for (let i = 0; i < 30; i++) LEVELS.push(genLevel(1234 + i * 97, i / 29));
 
 const platMat  = new THREE.MeshStandardMaterial({ color: 0x36406e, roughness: 0.92 });
 const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0.9 });
