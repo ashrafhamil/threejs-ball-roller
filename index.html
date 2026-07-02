@@ -641,50 +641,56 @@ function genLevel(seed, d) {
 }
 for (let i = 0; i < 30; i++) LEVELS.push(genLevel(1234 + i * 97, i / 29));
 
-// ---------- Chill levels: flat, LONG, winding path with real left/right heading
-// turns that roam the whole plane (no movers). ----------
+// ---------- Chill levels: LONG winding paths that roam the whole plane (no movers).
+// Real left/right heading turns, up & down ramps, a spiral, and a drop off an edge
+// onto a lower platform. ----------
 function genChill(seed) {
   const rng = mulberry32(seed);
   const rnd = (a, b) => a + rng() * (b - a);
   const ri = (a, b) => Math.floor(rnd(a, b + 1));
-  const W = 8, cy = 0;
+  const W = 8;
   const p = [];
-  let x = 0, z = 0, dx = 0, dz = -1;                          // heading (starts North / -z)
+  let x = 0, z = 0, dx = 0, dz = -1, cy = 0;                  // pos, heading (North / -z), height
   const straight = len => {
     const w = dz !== 0 ? W : len, d = dz !== 0 ? len : W;
     p.push({ x: x + dx * len / 2, z: z + dz * len / 2, w, d, y: cy });
     x += dx * len; z += dz * len;
   };
-  const hillsRun = len => {
+  const ramp = (len, dy) => {                                 // dy>0 descends along heading
     const w = dz !== 0 ? W : len, d = dz !== 0 ? len : W;
-    const n = ri(2, 3), b = [];
-    for (let k = 0; k < n; k++) {
-      const t = (k + 0.7) / (n + 1);
-      b.push({ x: x + dx * len * t + (dz !== 0 ? rnd(-W / 3, W / 3) : 0),
-               z: z + dz * len * t + (dx !== 0 ? rnd(-W / 3, W / 3) : 0),
-               amp: rnd(1.4, 2.6), sig: rnd(1.9, 2.7) });
-    }
-    p.push({ x: x + dx * len / 2, z: z + dz * len / 2, w, d, y: cy, bumps: b });
-    x += dx * len; z += dz * len;
+    const pl = { x: x + dx * len / 2, z: z + dz * len / 2, w, d, y: cy - dy / 2 };
+    if (dz !== 0) pl.sz = -dy / (dz * len); else pl.sx = -dy / (dx * len);
+    p.push(pl);
+    x += dx * len; z += dz * len; cy -= dy;
   };
   const turn = sign => {
-    x += dx * W / 2; z += dz * W / 2;                          // move to the junction center
+    x += dx * W / 2; z += dz * W / 2;
     p.push({ x, z, w: W, d: W, y: cy });                      // corner pad
     if (sign > 0) { const a = dz, b = -dx; dx = a; dz = b; }  // left
     else { const a = -dz, b = dx; dx = a; dz = b; }           // right
+  };
+  const stepDown = (h, len) => { cy -= h; straight(len); };   // cliff: roll off the edge onto a lower platform
+  const spiral = (sign, steps, per) => {                      // helical descent
+    for (let i = 0; i < steps; i++) { ramp(ri(8, 11), per); turn(sign); straight(ri(2, 4)); }
   };
 
   const firstLen = ri(12, 16);
   const start = { x: 0, z: -firstLen / 2 };
   straight(firstLen);
-  const N = ri(22, 30);                                        // long
-  let sinceTurn = 1;
+  const N = ri(22, 30);
+  let sinceTurn = 1, didSpiral = false, didDrop = false;
   for (let i = 0; i < N; i++) {
+    if (cy < -18) { ramp(ri(12, 16), -ri(4, 6)); sinceTurn++; continue; }   // keep height bounded
+    if (cy > 18) { ramp(ri(12, 16), ri(4, 6)); sinceTurn++; continue; }
     const r = rng();
-    if (r < 0.5 && sinceTurn >= 1) { turn(rng() < 0.5 ? 1 : -1); sinceTurn = 0; straight(ri(9, 16)); }
-    else if (r < 0.65) { hillsRun(ri(14, 20)); sinceTurn++; }
+    if (!didSpiral && i > N * 0.3 && r < 0.1) { spiral(rng() < 0.5 ? 1 : -1, ri(3, 4), ri(2, 3)); didSpiral = true; sinceTurn = 0; }
+    else if (!didDrop && i > N * 0.5 && r < 0.22) { stepDown(ri(5, 8), ri(10, 14)); didDrop = true; sinceTurn++; }
+    else if (r < 0.5 && sinceTurn >= 1) { turn(rng() < 0.5 ? 1 : -1); sinceTurn = 0; straight(ri(9, 15)); }
+    else if (r < 0.72) { ramp(ri(12, 17), (rng() < 0.5 ? 1 : -1) * ri(3, 6)); sinceTurn++; }
     else { straight(ri(10, 18)); sinceTurn++; }
   }
+  if (!didSpiral) spiral(rng() < 0.5 ? 1 : -1, ri(3, 4), 2);  // guarantee the fun bits appear
+  if (!didDrop) stepDown(ri(5, 7), 12);
   x += dx * W / 2; z += dz * W / 2;
   p.push({ x, z, w: W + 1, d: W + 1, y: cy });                // goal pad
   return { start, goalIdx: p.length - 1, platforms: p };
@@ -698,6 +704,7 @@ const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0
 const hillMat = new THREE.ShaderMaterial({
   uniforms: { uSun: { value: new THREE.Vector3(16, 30, 12).normalize() } },
   side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,  // sit flush on the slab top, no z-fight
   vertexShader: /* glsl */`
     attribute float aH;
     varying float vH;
@@ -713,7 +720,7 @@ const hillMat = new THREE.ShaderMaterial({
     uniform vec3 uSun;
     void main() {
       float t = clamp(vH / 3.0, 0.0, 1.0);
-      vec3 col = mix(vec3(0.16, 0.40, 0.30), mix(vec3(0.35, 0.62, 0.34), vec3(0.72, 0.66, 0.40), t), t);
+      vec3 col = mix(vec3(0.24, 0.50, 0.33), mix(vec3(0.40, 0.66, 0.36), vec3(0.74, 0.68, 0.42), t), t);
       float diff = clamp(dot(normalize(vNormalW), normalize(uSun)), 0.0, 1.0);
       gl_FragColor = vec4(col * (0.45 + 0.6 * diff), 1.0);
     }`,
@@ -762,13 +769,10 @@ function buildLevel(idx) {
     // orient so top face normal = (-sx, 1, -sz)
     const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
     mesh.quaternion.setFromUnitVectors(UP, normal);
-    // center of the tilted slab: drop half-thickness along its own normal.
-    // on bumped platforms, sink the slab extra so the green hill mesh (drawn at
-    // the true surface height) never sits coplanar with the slab top (z-fighting)
-    const sink = p.bumps ? 0.4 : 0;
+    // center of the tilted slab: drop half-thickness along its own normal
     mesh.position.set(
       p.x - normal.x * PLAT_H / 2,
-      p.y - normal.y * PLAT_H / 2 - sink,
+      p.y - normal.y * PLAT_H / 2,
       p.z - normal.z * PLAT_H / 2
     );
     mesh.castShadow = true;
@@ -1131,7 +1135,7 @@ function update(dt) {
       if (!pf.bumps) continue;
       if (ballPos.x < pf.minX || ballPos.x > pf.maxX || ballPos.z < pf.minZ || ballPos.z > pf.maxZ) continue;
       const surf = surfHeight(pf, ballPos.x, ballPos.z);
-      if (ballPos.y - R < surf && ballPos.y + R > pf.y - PLAT_H - 0.4) {
+      if (ballPos.y - R < surf && ballPos.y + R > pf.y - PLAT_H) {
         ballPos.y = surf + R; if (vel.y < 0) vel.y = 0;
         grounded = true; wasGrounded = true; carry.set(0, 0, 0);
       }
@@ -1156,7 +1160,7 @@ function update(dt) {
         if (ballPos.x < pf.minX - R || ballPos.x > pf.maxX + R || ballPos.z < pf.minZ - R || ballPos.z > pf.maxZ + R) continue;
         const surf = surfHeight(pf, ballPos.x, ballPos.z);
         if (ballPos.y - R >= surf - 0.02) continue;                // above the top: no wall
-        if (ballPos.y + R <= pf.y - PLAT_H - (pf.bumps ? 0.4 : 0)) continue;  // below the slab: pass under
+        if (ballPos.y + R <= pf.y - PLAT_H) continue;  // below the slab: pass under
         const wasOutX = prevX0 < pf.minX - R || prevX0 > pf.maxX + R;
         const wasOutZ = prevZ0 < pf.minZ - R || prevZ0 > pf.maxZ + R;
         if (wasOutX) { ballPos.x = (prevX0 < pf.minX) ? pf.minX - R : pf.maxX + R; if ((prevX0 < pf.minX) === (vel.x > 0)) vel.x = 0; }
