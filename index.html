@@ -708,6 +708,7 @@ const rampMat   = new THREE.MeshStandardMaterial({ color: 0x455299, roughness: 0
 // look the same at any elevation; plus simple sun shading
 const hillMat = new THREE.ShaderMaterial({
   uniforms: { uSun: { value: new THREE.Vector3(16, 30, 12).normalize() } },
+  side: THREE.DoubleSide,
   vertexShader: /* glsl */`
     attribute float aH;
     varying float vH;
@@ -722,7 +723,9 @@ const hillMat = new THREE.ShaderMaterial({
     varying vec3 vNormalW;
     uniform vec3 uSun;
     void main() {
-      float diff = clamp(dot(normalize(vNormalW), normalize(uSun)), 0.0, 1.0);
+      vec3 N = normalize(vNormalW);
+      if (!gl_FrontFacing) N = -N;
+      float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
       vec3 col;
       if (vH < -0.05) col = vec3(0.21, 0.25, 0.43);        // sides/bottom: slab-blue block
       else {
