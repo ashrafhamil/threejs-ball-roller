@@ -130,6 +130,7 @@
 </script>
 <script type="module">
 import * as THREE from 'three';
+import { mergeGeometries } from 'https://unpkg.com/three@0.160.0/examples/jsm/utils/BufferGeometryUtils.js';
 
 // ---------- Scene ----------
 const scene = new THREE.Scene();
@@ -193,11 +194,14 @@ const starMat = new THREE.ShaderMaterial({
 const stars = new THREE.Points(starGeo, starMat);
 scene.add(stars);
 
+const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// PCFSoft's multi-tap filtering is the dominant GPU cost on mobile — use plain PCF there
+renderer.shadowMap.type = IS_TOUCH ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 // ---------- Procedural audio (Web Audio, no files) ----------
@@ -244,8 +248,6 @@ const Sound = (() => {
     toggleMute() { muted = !muted; if (master) master.gain.setTargetAtTime(muted ? 0 : 0.55, ctx.currentTime, 0.05); return muted; },
   };
 })();
-
-const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
 // ---------- Global leaderboard (Supabase REST, per-level best times) ----------
 const LB_URL = 'https://qeimeyocuusfukyaqqsp.supabase.co/rest/v1/ballroller_scores';
@@ -344,7 +346,7 @@ scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x223355, 0.7));
 const sun = new THREE.DirectionalLight(0xfff4e0, 1.15);
 sun.position.set(16, 30, 12);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(IS_TOUCH ? 1024 : 2048, IS_TOUCH ? 1024 : 2048);
 sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
 sun.shadow.camera.top = 50; sun.shadow.camera.bottom = -50;
 sun.shadow.camera.far = 120;
@@ -761,10 +763,15 @@ function surfNormal(p, x, z, out) {
 }
 
 function clearLevel() {
-  platformMeshes.forEach(m => scene.remove(m));
+  platformMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); });
   platformMeshes = [];
   platforms = [];
-  if (goalMesh) { scene.remove(goalMesh); goalMesh = null; }
+  if (goalMesh) {
+    scene.remove(goalMesh);
+    // goal geometries/materials are created fresh each build (shared platform materials are not)
+    goalMesh.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+    goalMesh = null;
+  }
 }
 
 // build a SOLID hill: a closed block whose top follows the bumpy surface (not a
@@ -811,6 +818,9 @@ function buildSolidHill(p, phys) {
 function buildLevel(idx) {
   clearLevel();
   const lvl = LEVELS[idx];
+  // static platforms are baked into ONE merged mesh per material (1 draw call each,
+  // in both the color and shadow passes) — only movers stay as individual meshes
+  const statics = { plat: [], ramp: [], hill: [] };
   lvl.platforms.forEach((p, i) => {
     const sx = p.sx || 0, sz = p.sz || 0;
     const isRamp = sx !== 0 || sz !== 0;
@@ -820,13 +830,9 @@ function buildLevel(idx) {
       cx: p.x, cz: p.z, y: p.y, sx, sz, bumps: p.bumps || null,
     };
 
-    let mesh;
-    if (p.bumps) {                                        // SOLID hill block (bumpy top)
-      mesh = new THREE.Mesh(buildSolidHill(p, phys), hillMat);
-      mesh.position.set(p.x, 0, p.z);
-    } else {                                              // flat / ramp / mover slab
+    if (p.move) {                                         // mover slab: own mesh (animated)
       const geo = new THREE.BoxGeometry(p.w, PLAT_H, p.d);
-      mesh = new THREE.Mesh(geo, p.move ? moverMat : (isRamp ? rampMat : platMat));
+      const mesh = new THREE.Mesh(geo, moverMat);
       const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
       mesh.quaternion.setFromUnitVectors(UP, normal);
       mesh.position.set(
@@ -834,20 +840,31 @@ function buildLevel(idx) {
         p.y - normal.y * PLAT_H / 2,
         p.z - normal.z * PLAT_H / 2
       );
-    }
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    platformMeshes.push(mesh);
-
-    // moving / elevating platform: snapshot base + mesh origin, add per-frame velocity
-    if (p.move) {
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      platformMeshes.push(mesh);
       phys.move = p.move;
       phys.base = { cx: phys.cx, cz: phys.cz, y: phys.y,
         minX: phys.minX, maxX: phys.maxX, minZ: phys.minZ, maxZ: phys.maxZ };
       phys.mesh = mesh;
       phys.mesh0 = mesh.position.clone();
       phys.vel = { x: 0, y: 0, z: 0 };
+    } else if (p.bumps) {                                 // SOLID hill block (bumpy top)
+      const geo = buildSolidHill(p, phys);
+      geo.translate(p.x, 0, p.z);
+      statics.hill.push(geo);
+    } else {                                              // flat / ramp slab -> bake transform
+      const geo = new THREE.BoxGeometry(p.w, PLAT_H, p.d);
+      const normal = new THREE.Vector3(-sx, 1, -sz).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(UP, normal);
+      geo.applyMatrix4(new THREE.Matrix4().compose(
+        new THREE.Vector3(
+          p.x - normal.x * PLAT_H / 2,
+          p.y - normal.y * PLAT_H / 2,
+          p.z - normal.z * PLAT_H / 2
+        ), q, new THREE.Vector3(1, 1, 1)));
+      (isRamp ? statics.ramp : statics.plat).push(geo);
     }
     platforms.push(phys);
 
@@ -868,6 +885,19 @@ function buildLevel(idx) {
       scene.add(goalMesh);
     }
   });
+
+  for (const [key, geos] of Object.entries(statics)) {
+    if (!geos.length) continue;
+    const merged = mergeGeometries(geos, false);
+    geos.forEach(g => g.dispose());
+    const mesh = new THREE.Mesh(merged, key === 'hill' ? hillMat : (key === 'ramp' ? rampMat : platMat));
+    // static geometry casting is only worth its extra shadow-pass cost on desktop;
+    // on mobile the ball + movers are the only casters that visually matter
+    mesh.castShadow = !IS_TOUCH;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    platformMeshes.push(mesh);
+  }
 
   const s = lvl.platforms[0];
   ballPos.set(lvl.start.x, s.y + BALL_R, lvl.start.z);
@@ -1237,40 +1267,44 @@ function update(dt) {
   }
 }
 
-function render() {
-  camTarget.lerp(ballPos, 0.12);
+function render(dt) {
+  // dt-corrected smoothing: same stiffness as 0.12/frame at 60Hz, at ANY refresh rate
+  const k = 1 - Math.pow(0.88, dt * 60);
+  camTarget.lerp(ballPos, k);
   const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
   camDesired.set(
     camTarget.x + camDist * cp * Math.sin(camYaw),
     camTarget.y + camDist * sp,
     camTarget.z + camDist * cp * Math.cos(camYaw)
   );
-  camera.position.lerp(camDesired, 0.12);
+  camera.position.lerp(camDesired, k);
   camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
   // keep the shadow frustum centered on the ball so shadows never drop out
   sun.position.copy(ballPos).add(sunOffset);
   sun.target.position.copy(ballPos);
   sun.target.updateMatrixWorld();
 
-  if (goalMesh) goalMesh.rotation.y += 0.015;
-  stars.rotation.y += 0.00006;
-  starMat.uniforms.uTime.value += 0.016;
+  if (goalMesh) goalMesh.rotation.y += 0.9 * dt;
+  stars.rotation.y += 0.0036 * dt;
+  starMat.uniforms.uTime.value += dt;
   renderer.render(scene, camera);
 }
 
 // ---------- Boot ----------
-const clock = new THREE.Clock();
 renderScores();
 buildLevelPicker();
 startLevel(0); // straight into play, no start menu
 
-function tick() {
-  const dt = Math.min(clock.getDelta(), 0.05);
+// vsync-aligned rAF timestamp (steadier than sampling performance.now mid-callback)
+let lastT = 0;
+function tick(now) {
+  const dt = Math.min((now - lastT) / 1000, 0.05);
+  lastT = now;
   update(dt);
-  render();
+  render(dt);
   requestAnimationFrame(tick);
 }
-tick();
+requestAnimationFrame(tick);
 </script>
 </body>
 </html>
